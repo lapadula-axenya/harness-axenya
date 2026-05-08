@@ -93,12 +93,16 @@ def _register_builtins(registry: SkillRegistry) -> None:
     """Import-time registration of all built-in skills.
 
     Imported lazily to avoid a circular import (skills depend on this module).
+    Each module's `all_skills()` decides between mock and MCP/HTTP transport
+    based on env vars, so registration cost is constant.
     """
-    from xenia.skills import bigquery, hubspot, slack
+    from xenia.skills import bigquery, hubspot, jira, ksenia, slack
 
     for skill in (
         *hubspot.all_skills(),
         *slack.all_skills(),
+        *jira.all_skills(),
         *bigquery.all_skills(),
+        *ksenia.all_skills(),
     ):
         registry.register(skill)

@@ -1,13 +1,25 @@
-"""HubSpot skills — Phase 1 in-memory mocks.
+"""HubSpot skills.
 
-Real MCP-backed implementations land in Phase 3. The mocks return deterministic
-shapes so end-to-end webhook tests can exercise the full agent loop.
+Two modes selected by env:
+
+  * `HUBSPOT_MCP_URL` set → MCP-backed skills against the HubSpot MCP
+    server (production path).
+  * Unset → in-memory mocks (Phase 1 dev path, kept so local + tests
+    work without external creds).
+
+Phase 1 acceptance and Phase 3 acceptance both call `all_skills()` —
+the function transparently picks the mode at registration time.
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 
+from xenia.security.secrets import read_secret
 from xenia.skills.base import Skill, SkillResult
+from xenia.skills.mcp_skill import MCPSkill
+
+# ── Mocks ────────────────────────────────────────────────────────────────
 
 
 class HubspotGetContact(Skill):
@@ -86,5 +98,44 @@ class HubspotAddNote(Skill):
         )
 
 
+# ── Real (MCP) ───────────────────────────────────────────────────────────
+
+
+def _mcp_skills(server_url: str, token: str | None) -> list[Skill]:
+    auth = f"Bearer {token}" if token else None
+    return [
+        MCPSkill(
+            name="hubspot.get_contact",
+            description=HubspotGetContact.description,
+            input_schema=HubspotGetContact.input_schema,
+            server_url=server_url,
+            remote_tool="get_contact",
+            auth_header=auth,
+            idempotent=True,
+        ),
+        MCPSkill(
+            name="hubspot.update_lead_stage",
+            description=HubspotUpdateLeadStage.description,
+            input_schema=HubspotUpdateLeadStage.input_schema,
+            server_url=server_url,
+            remote_tool="update_lifecycle_stage",
+            auth_header=auth,
+            idempotent=True,
+        ),
+        MCPSkill(
+            name="hubspot.add_note",
+            description=HubspotAddNote.description,
+            input_schema=HubspotAddNote.input_schema,
+            server_url=server_url,
+            remote_tool="add_note",
+            auth_header=auth,
+        ),
+    ]
+
+
 def all_skills() -> list[Skill]:
+    server_url = os.environ.get("HUBSPOT_MCP_URL")
+    if server_url:
+        token = read_secret("hubspot_mcp_token")
+        return _mcp_skills(server_url, token)
     return [HubspotGetContact(), HubspotUpdateLeadStage(), HubspotAddNote()]

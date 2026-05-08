@@ -28,6 +28,9 @@ dependencies = [
     "structlog>=24.4",
     "langgraph>=0.2.50",
     "langgraph-checkpoint-postgres>=2.0.0",
+    "mcp>=1.0.0",
+    "google-cloud-secret-manager>=2.21",
+    "google-cloud-bigquery>=3.27",
 ]
 
 [project.optional-dependencies]
