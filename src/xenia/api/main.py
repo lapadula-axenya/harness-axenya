@@ -20,6 +20,10 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     configure_logging()
     # Eagerly load registry so YAML errors surface at startup, not at first request.
     get_registry()
+    # Phase 4: attach Cloud Monitoring sink to all counters when GCP_PROJECT_ID is set.
+    from xenia.observability.metrics import configure_sink
+
+    configure_sink()
     yield
 
 
