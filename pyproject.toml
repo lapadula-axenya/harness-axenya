@@ -39,6 +39,10 @@ dev = [
     "types-pyyaml",
     "freezegun>=1.5",
 ]
+dashboard = [
+    "streamlit>=1.40",
+    "pandas>=2.2",
+]
 
 [build-system]
 requires = ["hatchling"]

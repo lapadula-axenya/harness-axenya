@@ -54,6 +54,17 @@ Then trigger a webhook locally:
 uv run python scripts/trigger_webhook.py exemplo_eco '{"foo": "bar"}'
 ```
 
+### Dashboard (Streamlit, prévia da Fase 4)
+
+```bash
+uv sync --extra dashboard
+uv run streamlit run dashboard/app.py
+```
+
+Por padrão consulta `http://localhost:8080`. O JWT engineer é gerado
+automaticamente a partir do `JWT_SECRET` do `.env` — em produção isso vira
+SSO de usuário real (Phase 4, Q7).
+
 ### Running tests
 
 ```bash
