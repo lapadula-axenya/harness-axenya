@@ -13,8 +13,6 @@ from xenia.agents.registry import AgentNotFoundError, AgentRegistry
 from xenia.api.deps import (
     get_agent_registry,
     get_db,
-    get_settings_dep,
-    get_skills,
     require_scope,
 )
 from xenia.api.schemas import (
@@ -23,11 +21,8 @@ from xenia.api.schemas import (
     RunEventResponse,
     RunResponse,
 )
-from xenia.config import Settings
-from xenia.executor.executor import run_agent
-from xenia.llm.omnirouter_client import get_llm_client
+from xenia.executor.dispatch import get_dispatcher
 from xenia.observability import metrics
-from xenia.skills.base import SkillRegistry
 from xenia.storage.models import RunStatus
 from xenia.storage.repositories import RunEventRepository, RunRepository
 
@@ -44,9 +39,7 @@ async def create_run(
     agent_id: str,
     body: RunCreate,
     background: BackgroundTasks,
-    settings: Annotated[Settings, Depends(get_settings_dep)],
     registry: Annotated[AgentRegistry, Depends(get_agent_registry)],
-    skills: Annotated[SkillRegistry, Depends(get_skills)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> RunCreatedResponse:
     try:
@@ -75,20 +68,8 @@ async def create_run(
     await db.commit()
     metrics.runs_created.inc(agent_id, body.triggered_by)
 
-    llm_client = get_llm_client(
-        provider=definition.llm.provider,
-        anthropic_api_key=settings.anthropic_api_key,
-        omnirouter_api_key=settings.omnirouter_api_key,
-        omnirouter_base_url=settings.omnirouter_base_url,
-    )
-    background.add_task(
-        run_agent,
-        run_id=run.id,
-        definition=definition,
-        payload=body.payload,
-        llm_client=llm_client,
-        skill_registry=skills,
-    )
+    get_dispatcher(background).dispatch(run.id)
+
     return RunCreatedResponse(
         run_id=run.id,
         status=run.status.value if hasattr(run.status, "value") else str(run.status),
@@ -177,9 +158,7 @@ async def cancel_run(
 async def retry_run(
     run_id: UUID,
     background: BackgroundTasks,
-    settings: Annotated[Settings, Depends(get_settings_dep)],
     registry: Annotated[AgentRegistry, Depends(get_agent_registry)],
-    skills: Annotated[SkillRegistry, Depends(get_skills)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> RunCreatedResponse:
     repo = RunRepository(db)
@@ -201,20 +180,8 @@ async def retry_run(
     )
     await db.commit()
 
-    llm_client = get_llm_client(
-        provider=definition.llm.provider,
-        anthropic_api_key=settings.anthropic_api_key,
-        omnirouter_api_key=settings.omnirouter_api_key,
-        omnirouter_base_url=settings.omnirouter_base_url,
-    )
-    background.add_task(
-        run_agent,
-        run_id=new_run.id,
-        definition=definition,
-        payload=original.input_payload,
-        llm_client=llm_client,
-        skill_registry=skills,
-    )
+    get_dispatcher(background).dispatch(new_run.id)
+
     return RunCreatedResponse(
         run_id=new_run.id,
         status=new_run.status.value if hasattr(new_run.status, "value") else str(new_run.status),
