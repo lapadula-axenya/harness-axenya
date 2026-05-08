@@ -1,0 +1,69 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write   # for Workload Identity Federation
+
+env:
+  REGION: us-central1
+  AR_REPO: xenia-images
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOYER_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Submit Cloud Build
+        run: |
+          gcloud builds submit \
+            --config infra/cloudbuild.yaml \
+            --substitutions=_REGION=${{ env.REGION }},_AR_REPO=${{ env.AR_REPO }} \
+            .
+
+      - name: Run DB migrations (Cloud SQL Proxy)
+        run: |
+          # Spin up Cloud SQL Auth Proxy in background and run alembic
+          gcloud components install cloud-sql-proxy --quiet
+          cloud-sql-proxy --port 5432 ${{ secrets.CLOUDSQL_CONNECTION_NAME }} &
+          PROXY_PID=$!
+          sleep 5
+          pip install uv
+          uv sync --all-extras
+          export DATABASE_URL_SYNC="postgresql+psycopg://xenia:${{ secrets.CLOUDSQL_PASSWORD }}@127.0.0.1:5432/xenia"
+          uv run alembic upgrade head
+          kill $PROXY_PID
+
+      - name: Deploy xenia-api (with rollout traffic split)
+        run: |
+          gcloud run deploy xenia-api \
+            --image ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.AR_REPO }}/xenia-api:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --quiet \
+            --no-traffic
+          gcloud run services update-traffic xenia-api \
+            --region ${{ env.REGION }} \
+            --to-latest
+
+      - name: Deploy xenia-worker
+        run: |
+          gcloud run deploy xenia-worker \
+            --image ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.AR_REPO }}/xenia-worker:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --quiet

@@ -1,6 +1,8 @@
-"""Run CRUD + cancel + retry."""
+"""Run CRUD + cancel + retry + SSE event stream."""
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import datetime
 from typing import Annotated
 from uuid import UUID
@@ -8,6 +10,7 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from jsonschema import Draft202012Validator, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sse_starlette.sse import EventSourceResponse
 
 from xenia.agents.registry import AgentNotFoundError, AgentRegistry
 from xenia.api.deps import (
@@ -125,6 +128,57 @@ async def run_events(
         raise HTTPException(status_code=404, detail="run not found")
     events = await RunEventRepository(db).list_for_run(run_id)
     return [RunEventResponse.model_validate(e) for e in events]
+
+
+@router.get(
+    "/{run_id}/events/stream",
+    dependencies=[Depends(require_scope("runs:read"))],
+)
+async def run_events_stream(
+    run_id: UUID,
+) -> EventSourceResponse:
+    """Server-Sent Events stream of run events.
+
+    Polls the events table; emits each new row as one SSE event. Closes
+    automatically when the run reaches a terminal state. Idle keep-alives
+    every 15s prevent intermediaries from closing the connection.
+    """
+    from xenia.storage.db import get_sessionmaker
+
+    sessionmaker = get_sessionmaker()
+
+    async def _gen():  # type: ignore[no-untyped-def]
+        last_event_id = 0
+        terminal = {RunStatus.done, RunStatus.failed, RunStatus.cancelled}
+        while True:
+            async with sessionmaker() as session:
+                run = await RunRepository(session).get(run_id)
+                if run is None:
+                    yield {"event": "error", "data": json.dumps({"error": "run not found"})}
+                    return
+                events = await RunEventRepository(session).list_for_run(run_id)
+
+            new_events = [e for e in events if e.id > last_event_id]
+            for event in new_events:
+                last_event_id = event.id
+                yield {
+                    "id": str(event.id),
+                    "event": event.event_type,
+                    "data": json.dumps(
+                        {
+                            "step": event.step_number,
+                            "payload": event.payload,
+                            "ts": event.created_at.isoformat(),
+                        }
+                    ),
+                }
+
+            if run.status in terminal and not new_events:
+                yield {"event": "close", "data": json.dumps({"status": run.status})}
+                return
+            await asyncio.sleep(0.5)
+
+    return EventSourceResponse(_gen(), ping=15)  # type: ignore[no-untyped-call]
 
 
 @router.post(

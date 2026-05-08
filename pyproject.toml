@@ -28,6 +28,12 @@ dependencies = [
     "structlog>=24.4",
     "langgraph>=0.2.50",
     "langgraph-checkpoint-postgres>=2.0.0",
+    "mcp>=1.0.0",
+    "google-cloud-secret-manager>=2.21",
+    "google-cloud-bigquery>=3.27",
+    "langfuse>=2.50",
+    "sse-starlette>=2.1",
+    "google-cloud-monitoring>=2.22",
 ]
 
 [project.optional-dependencies]
@@ -75,7 +81,7 @@ module = ["celery.*", "jsonschema.*", "anthropic.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["langgraph.*"]
+module = ["langgraph.*", "google.*", "langfuse.*", "sse_starlette.*", "mcp.*"]
 follow_imports = "skip"
 ignore_missing_imports = true
 

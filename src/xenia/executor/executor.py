@@ -217,6 +217,7 @@ async def _run_graph(
 
     final_state: AgentState | None = None
     step_counter = 0
+    seen_messages = 0
     async for event in graph.astream(
         initial_state,
         config=config,
@@ -235,6 +236,12 @@ async def _run_graph(
                 "tokens_output_total": int(event.get("tokens_output") or 0),
             },
         )
+
+        # Emit granular events for any new messages produced by the last node.
+        new_messages = (event.get("messages") or [])[seen_messages:]
+        seen_messages += len(new_messages)
+        for msg in new_messages:
+            await _emit_message_events(run_id, step_counter, msg)
 
         # Co-operative cancellation check — fast-fail if /v1/runs/{id}/cancel
         # was hit. The graph stops after the current node finishes.
@@ -334,6 +341,57 @@ async def _log_event(
             step_number=step,
             payload=data,
         )
+
+
+async def _emit_message_events(
+    run_id: uuid.UUID, step: int, message: dict[str, Any]
+) -> None:
+    """Translate a freshly-appended LangGraph message into granular events.
+
+    Assistant messages with `tool_use` blocks emit `llm_response` (with
+    tool-use count) plus one `tool_call` per block. Plain assistant text
+    emits `llm_response`. User messages with `tool_result` blocks emit
+    one `tool_result` per block. This keeps observability rich enough to
+    debug agent loops without adding DB I/O inside graph nodes.
+    """
+    role = message.get("role")
+    content = message.get("content") or []
+    if role == "assistant":
+        tool_uses = [b for b in content if b.get("type") == "tool_use"]
+        text_blocks = [b for b in content if b.get("type") == "text"]
+        await _log_event(
+            run_id,
+            "llm_response",
+            step,
+            {
+                "tool_uses": len(tool_uses),
+                "text_chars": sum(len(b.get("text", "")) for b in text_blocks),
+            },
+        )
+        for tu in tool_uses:
+            await _log_event(
+                run_id,
+                "tool_call",
+                step,
+                {
+                    "tool_use_id": tu.get("id"),
+                    "name": tu.get("name"),
+                    "input": tu.get("input"),
+                },
+            )
+    elif role == "user":
+        for block in content:
+            if block.get("type") != "tool_result":
+                continue
+            await _log_event(
+                run_id,
+                "tool_result",
+                step,
+                {
+                    "tool_use_id": block.get("tool_use_id"),
+                    "is_error": block.get("is_error", False),
+                },
+            )
 
 
 def _render_system_prompt(template: str, payload: dict[str, Any]) -> str:
