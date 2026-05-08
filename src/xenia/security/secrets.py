@@ -67,7 +67,7 @@ def read_secret(name: str, *, required: bool = False) -> str | None:
         client = secretmanager.SecretManagerServiceClient()
         path = client.secret_version_path(project_id, name, "latest")
         response = client.access_secret_version(name=path)
-        return response.payload.data.decode("utf-8")
+        return str(response.payload.data.decode("utf-8"))
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "failed to read %r from Secret Manager: %s", name, exc, exc_info=False

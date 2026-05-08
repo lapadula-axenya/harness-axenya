@@ -1,0 +1,13 @@
+gcp_project_id     = "<GCP_PROJECT_ID>"           # Q2 — Estevão
+region             = "us-central1"
+environment        = "prod"
+
+# Image refs come from CI; for first apply, use a placeholder image.
+api_image    = "us-central1-docker.pkg.dev/<GCP_PROJECT_ID>/xenia-images/xenia-api:latest"
+worker_image = "us-central1-docker.pkg.dev/<GCP_PROJECT_ID>/xenia-images/xenia-worker:latest"
+
+cloudsql_tier   = "db-custom-2-7680"
+redis_memory_gb = 1
+
+slack_webhook_url  = "<SLACK_WEBHOOK_URL>"        # #axenya-agents-alerts
+notification_email = "sophia@axenya.com"

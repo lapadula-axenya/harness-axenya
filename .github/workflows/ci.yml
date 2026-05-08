@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: xenia
+          POSTGRES_PASSWORD: xenia
+          POSTGRES_DB: xenia
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U xenia"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://xenia:xenia@localhost:5432/xenia
+      DATABASE_URL_SYNC: postgresql+psycopg://xenia:xenia@localhost:5432/xenia
+      REDIS_URL: redis://localhost:6379/0
+      ANTHROPIC_API_KEY: ci-not-real
+      WEBHOOK_SECRET_EXEMPLO_ECO: ci-secret
+      WEBHOOK_SECRET_TRIAGEM_LEAD: ci-secret
+      JWT_SECRET: ci-jwt-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Run migrations
+        run: uv run alembic upgrade head
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type-check
+        run: uv run mypy src/
+
+      - name: Test
+        run: uv run pytest -v
