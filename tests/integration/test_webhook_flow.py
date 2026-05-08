@@ -1,6 +1,7 @@
 """Integration test: webhook -> run -> status."""
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 from unittest.mock import patch
@@ -13,6 +14,43 @@ from xenia.llm.client import LLMResponse
 from xenia.security.hmac_verify import compute_signature
 
 pytestmark = pytest.mark.integration
+
+
+def _agent_secret(agent_id: str) -> str:
+    """Read the HMAC secret from the same env var the server reads.
+
+    Must be evaluated at call-time, not import-time, because pytest plugins
+    or CI may set the var after this module is imported.
+    """
+    name = f"WEBHOOK_SECRET_{agent_id.upper()}"
+    return os.environ[name]
+
+
+@pytest.fixture(autouse=True)
+async def _seed_agents():
+    """Webhook flow needs an `agents` row so the FK on `runs.agent_id` is satisfied.
+
+    Async fixture so we reuse pytest-asyncio's event loop — running
+    `asyncio.run(...)` here would close the loop our cached SQLAlchemy
+    engine is bound to and break the next test with `Event loop is closed`.
+    """
+    from xenia.agents.registry import get_registry
+    from xenia.storage.db import reset_engine, session_scope
+    from xenia.storage.repositories import AgentRepository
+
+    registry = get_registry()
+    async with session_scope() as session:
+        repo = AgentRepository(session)
+        for definition in registry.list_all():
+            await repo.upsert(
+                agent_id=definition.id,
+                nome=definition.nome,
+                descricao=definition.descricao,
+                yaml_hash=registry.yaml_hash(definition.id),
+                yaml_content=registry.yaml_content(definition.id),
+            )
+    yield
+    await reset_engine()
 
 
 class _FakeLLM:
@@ -51,7 +89,7 @@ async def test_webhook_rejects_unknown_agent():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         body = b'{"foo":"bar"}'
         ts = str(int(time.time()))
-        sig = compute_signature(body, ts, "test-secret")
+        sig = compute_signature(body, ts, _agent_secret("exemplo_eco"))
         resp = await client.post(
             "/v1/webhooks/does_not_exist",
             content=body,
@@ -69,7 +107,7 @@ async def test_webhook_rejects_invalid_payload():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         body = b'{"wrong_field":"x"}'
         ts = str(int(time.time()))
-        sig = compute_signature(body, ts, "test-secret")
+        sig = compute_signature(body, ts, _agent_secret("exemplo_eco"))
         resp = await client.post(
             "/v1/webhooks/exemplo_eco",
             content=body,
@@ -88,10 +126,13 @@ async def test_webhook_full_flow_creates_run(fake_llm):
 
     body = b'{"foo":"hello"}'
     ts = str(int(time.time()))
-    sig = compute_signature(body, ts, "test-secret")
+    sig = compute_signature(body, ts, _agent_secret("exemplo_eco"))
 
+    # Phase 2 moved LLM client construction into the worker codepath.
+    # InProcessDispatcher runs `_run_agent_async`, which builds the client
+    # via xenia.executor.tasks.get_llm_client — that's the patch site.
     with patch(
-        "xenia.api.routes.webhooks.get_llm_client",
+        "xenia.executor.tasks.get_llm_client",
         return_value=fake_llm,
     ):
         async with AsyncClient(transport=transport, base_url="http://test") as client:
