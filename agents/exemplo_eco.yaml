@@ -1,0 +1,30 @@
+id: exemplo_eco
+nome: Exemplo Echo
+descricao: Agente de teste que ecoa o payload de entrada como mensagem de saída.
+webhook_secret_env: WEBHOOK_SECRET_EXEMPLO_ECO
+
+input_schema:
+  type: object
+  required: [foo]
+  properties:
+    foo:
+      type: string
+      description: campo arbitrário só pra exercitar o path
+
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  max_tokens: 256
+  temperature: 0.0
+
+skills: []
+
+system_prompt: |
+  Você é um agente de teste do Xenia Harness. Recebe um payload JSON e responde
+  com uma mensagem curta confirmando o que recebeu. Não use ferramentas.
+
+execution:
+  max_steps: 3
+  timeout_seconds: 60
+  retry_on_failure: 0
+  retry_backoff_seconds: 30

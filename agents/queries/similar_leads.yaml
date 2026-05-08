@@ -1,0 +1,11 @@
+name: similar_leads
+description: Busca leads similares por empresa ou setor.
+sql: |
+  SELECT empresa, stage, last_contact_date
+  FROM `axenya.crm.leads`
+  WHERE (empresa = @empresa OR setor = @setor)
+    AND created_at > CURRENT_DATE() - 90
+  LIMIT 5
+params:
+  empresa: STRING
+  setor: STRING

@@ -1,0 +1,48 @@
+id: triagem_lead
+nome: Triagem de Lead
+descricao: |
+  Recebe webhook do HubSpot quando um lead muda de stage, busca leads
+  similares no BigQuery, atualiza o stage e notifica o canal de vendas.
+webhook_secret_env: WEBHOOK_SECRET_TRIAGEM_LEAD
+
+input_schema:
+  type: object
+  required: [contact_id, empresa]
+  properties:
+    contact_id:
+      type: string
+      description: HubSpot contact id
+    empresa:
+      type: string
+    setor:
+      type: string
+
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  max_tokens: 1024
+  temperature: 0.2
+
+skills:
+  - hubspot.get_contact
+  - hubspot.update_lead_stage
+  - hubspot.add_note
+  - bigquery.query
+  - slack.notify_channel
+
+system_prompt: |
+  Você é o agente de triagem de leads da Axenya. Para cada lead recebido:
+  1. Confirme os dados no HubSpot via hubspot.get_contact.
+  2. Busque leads similares com bigquery.query (query_name=similar_leads).
+  3. Decida o próximo stage (mql, sql, ou opportunity) com base no histórico.
+  4. Atualize o stage com hubspot.update_lead_stage e adicione uma nota
+     resumindo a decisão com hubspot.add_note.
+  5. Notifique o canal #vendas-axenya com slack.notify_channel.
+
+  Lead atual: contact_id={{contact_id}}, empresa={{empresa}}.
+
+execution:
+  max_steps: 8
+  timeout_seconds: 180
+  retry_on_failure: 2
+  retry_backoff_seconds: 30

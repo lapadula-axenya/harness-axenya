@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axenya.com/xenia/agent.schema.json",
+  "title": "Xenia Agent Definition",
+  "description": "Schema validating the YAML files under agents/.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "nome",
+    "descricao",
+    "webhook_secret_env",
+    "input_schema",
+    "llm",
+    "system_prompt"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "snake_case unique identifier"
+    },
+    "nome": {"type": "string", "minLength": 1},
+    "descricao": {"type": "string", "minLength": 1},
+    "webhook_secret_env": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]*$",
+      "description": "Name of the environment variable holding the HMAC secret"
+    },
+    "input_schema": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {"const": "object"},
+        "required": {"type": "array", "items": {"type": "string"}},
+        "properties": {"type": "object"},
+        "additionalProperties": {"type": ["boolean", "object"]}
+      }
+    },
+    "llm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model"],
+      "properties": {
+        "provider": {"enum": ["anthropic", "omnirouter"]},
+        "model": {"type": "string"},
+        "max_tokens": {"type": "integer", "minimum": 1, "maximum": 200000},
+        "temperature": {"type": "number", "minimum": 0.0, "maximum": 1.0}
+      }
+    },
+    "skills": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "system_prompt": {"type": "string", "minLength": 1},
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_steps": {"type": "integer", "minimum": 1, "maximum": 100},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+        "retry_on_failure": {"type": "integer", "minimum": 0, "maximum": 10},
+        "retry_backoff_seconds": {"type": "integer", "minimum": 0, "maximum": 600}
+      }
+    },
+    "graph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodes", "edges"],
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "type"],
+            "properties": {
+              "name": {"type": "string"},
+              "type": {"enum": ["llm_call", "tool_call", "human_input", "branch"]},
+              "prompt": {"type": "string"},
+              "tool": {"type": "string"},
+              "condition": {"type": "string"}
+            }
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["from", "to"],
+            "properties": {
+              "from": {"type": "string"},
+              "to": {"type": "string"},
+              "condition": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "enabled": {"type": "boolean"}
+  }
+}
