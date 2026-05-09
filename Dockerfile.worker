@@ -14,5 +14,4 @@ COPY agents/ ./agents/
 
 RUN uv pip install --system --no-cache .
 
-# Phase 1: worker is a stub — actual Celery worker comes in Phase 2.
-CMD ["celery", "-A", "xenia.celery_app", "worker", "--loglevel=info"]
+CMD ["celery", "-A", "xenia.celery_app", "worker", "--queues=xenia", "--concurrency=4", "--loglevel=info"]

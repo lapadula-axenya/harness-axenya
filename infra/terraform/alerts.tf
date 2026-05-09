@@ -1,18 +1,12 @@
 # Alerts per SPEC.md § Observability.
-
-resource "google_monitoring_notification_channel" "slack" {
-  display_name = "axenya-agents-alerts (slack)"
-  type         = "slack"
-  labels = {
-    channel_name = "#axenya-agents-alerts"
-  }
-  sensitive_labels {
-    auth_token = var.slack_webhook_url
-  }
-}
+#
+# The Slack notification channel needs OAuth via GCP console (not a raw
+# incoming webhook URL), so we provision it manually post-apply and feed
+# its id back into Terraform via `slack_channel_id`. Default = empty,
+# which means alerts route only to email until the Slack channel is wired.
 
 resource "google_monitoring_notification_channel" "email" {
-  display_name = "Sophia (email)"
+  display_name = "Xenia alerts (email)"
   type         = "email"
   labels = {
     email_address = var.notification_email
@@ -20,10 +14,10 @@ resource "google_monitoring_notification_channel" "email" {
 }
 
 locals {
-  channels = [
-    google_monitoring_notification_channel.slack.id,
+  channels = compact([
+    var.slack_channel_id,
     google_monitoring_notification_channel.email.id,
-  ]
+  ])
 }
 
 resource "google_monitoring_alert_policy" "failure_rate_high" {
