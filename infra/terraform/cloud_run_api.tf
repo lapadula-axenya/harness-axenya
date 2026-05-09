@@ -4,6 +4,11 @@ resource "google_cloud_run_v2_service" "api" {
   ingress  = "INGRESS_TRAFFIC_ALL"
   labels   = local.labels
 
+  # Bootstrap with the public hello image so Terraform can create the
+  # service before any xenia image is pushed. The GitHub Actions deploy
+  # workflow flips this to the real image; after that, Terraform must
+  # not fight with the deploy by reverting the image — hence the
+  # lifecycle block below.
   template {
     service_account = google_service_account.api.email
 
@@ -98,6 +103,10 @@ resource "google_cloud_run_v2_service" "api" {
 
     vpc_access {
       egress = "PRIVATE_RANGES_ONLY"
+      network_interfaces {
+        network    = "default"
+        subnetwork = "default"
+      }
     }
 
     timeout = "60s"
@@ -106,6 +115,14 @@ resource "google_cloud_run_v2_service" "api" {
   traffic {
     type    = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
     percent = 100
+  }
+
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version,
+    ]
   }
 }
 

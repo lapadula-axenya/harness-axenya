@@ -12,10 +12,12 @@ resource "google_cloud_run_v2_service" "worker" {
       max_instance_count = var.max_worker_instances
     }
 
+    # No command/args override — the real Dockerfile.worker CMD runs celery.
+    # During first bootstrap with the hello image, that image's default
+    # CMD runs the hello server, which keeps the container healthy enough
+    # for Cloud Run to mark the service as Ready.
     containers {
-      image   = var.worker_image
-      command = ["celery"]
-      args    = ["-A", "xenia.celery_app", "worker", "--queues=xenia", "--concurrency=4", "--loglevel=info"]
+      image = var.worker_image
 
       resources {
         limits = {
@@ -56,7 +58,23 @@ resource "google_cloud_run_v2_service" "worker" {
       }
     }
 
+    vpc_access {
+      egress = "PRIVATE_RANGES_ONLY"
+      network_interfaces {
+        network    = "default"
+        subnetwork = "default"
+      }
+    }
+
     timeout = "3600s" # workers run long agent tasks
+  }
+
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version,
+    ]
   }
 }
 
