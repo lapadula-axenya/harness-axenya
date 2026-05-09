@@ -16,13 +16,15 @@ variable "environment" {
 }
 
 variable "api_image" {
-  description = "Artifact Registry image for xenia-api (set by Cloud Build / GH Actions)"
+  description = "Artifact Registry image for xenia-api. Defaults to the public Cloud Run hello image so Terraform can bootstrap the service before any xenia image is pushed; the GitHub Actions deploy workflow flips it to the real image after the first successful build."
   type        = string
+  default     = "us-docker.pkg.dev/cloudrun/container/hello"
 }
 
 variable "worker_image" {
-  description = "Artifact Registry image for xenia-worker"
+  description = "Artifact Registry image for xenia-worker. Same bootstrap pattern as api_image."
   type        = string
+  default     = "us-docker.pkg.dev/cloudrun/container/hello"
 }
 
 variable "cloudsql_tier" {
@@ -70,9 +72,16 @@ variable "jwt_secret_id" {
 }
 
 variable "slack_webhook_url" {
-  description = "Slack incoming webhook for #axenya-agents-alerts"
+  description = "Slack incoming webhook for #axenya-agents-alerts (kept for backwards compat; not consumed by Terraform — Slack channels need OAuth via GCP console)"
   type        = string
+  default     = ""
   sensitive   = true
+}
+
+variable "slack_channel_id" {
+  description = "Existing Cloud Monitoring notification-channel id for Slack. Leave blank to use email-only alerts. Format: projects/<PROJECT>/notificationChannels/<NUM>"
+  type        = string
+  default     = ""
 }
 
 variable "notification_email" {
