@@ -21,24 +21,24 @@ locals {
 }
 
 resource "google_monitoring_alert_policy" "failure_rate_high" {
-  display_name = "Xenia: failure rate > 10% (5m)"
+  display_name = "Xenia: many runs created (5m)"
   combiner     = "OR"
   conditions {
-    display_name = "failure rate"
+    display_name = "runs created"
     condition_threshold {
       filter          = "metric.type=\"custom.googleapis.com/xenia/runs/created\" AND resource.type=\"global\""
       duration        = "300s"
       comparison      = "COMPARISON_GT"
-      threshold_value = 0.10
+      threshold_value = 100
       aggregations {
         alignment_period   = "60s"
-        per_series_aligner = "ALIGN_RATE"
+        per_series_aligner = "ALIGN_MAX"
       }
     }
   }
   notification_channels = local.channels
   user_labels           = local.labels
-  depends_on = [google_monitoring_metric_descriptor.runs_created]
+  depends_on            = [google_monitoring_metric_descriptor.runs_created]
 }
 
 resource "google_monitoring_alert_policy" "queue_depth" {
@@ -62,7 +62,7 @@ resource "google_monitoring_alert_policy" "queue_depth" {
 }
 
 resource "google_monitoring_alert_policy" "webhook_auth" {
-  display_name = "Xenia: webhook auth failures > 100/min"
+  display_name = "Xenia: webhook auth failures > 100 (1m)"
   combiner     = "OR"
   conditions {
     display_name = "webhook auth failures"
@@ -73,12 +73,12 @@ resource "google_monitoring_alert_policy" "webhook_auth" {
       threshold_value = 100
       aggregations {
         alignment_period   = "60s"
-        per_series_aligner = "ALIGN_RATE"
+        per_series_aligner = "ALIGN_SUM"
       }
     }
   }
   notification_channels = local.channels
-  depends_on = [google_monitoring_metric_descriptor.webhook_auth_failures]
+  depends_on            = [google_monitoring_metric_descriptor.webhook_auth_failures]
 }
 
 resource "google_monitoring_alert_policy" "cost_per_day" {

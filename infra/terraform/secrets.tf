@@ -25,6 +25,20 @@ resource "google_secret_manager_secret" "managed" {
   }
 }
 
+# Cloud Run rejects services whose env refs `version = "latest"` of a
+# secret with no versions. Seed every managed secret with a placeholder
+# so the first apply succeeds; replace via `gcloud secrets versions add`
+# (Step 7 in the deploy guide).
+resource "google_secret_manager_secret_version" "managed_placeholder" {
+  for_each    = google_secret_manager_secret.managed
+  secret      = each.value.id
+  secret_data = "PLACEHOLDER_REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
 # Bind runtime SAs to read these secrets.
 resource "google_secret_manager_secret_iam_member" "api_access" {
   for_each = google_secret_manager_secret.managed
