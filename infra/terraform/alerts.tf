@@ -38,6 +38,7 @@ resource "google_monitoring_alert_policy" "failure_rate_high" {
   }
   notification_channels = local.channels
   user_labels           = local.labels
+  depends_on = [google_monitoring_metric_descriptor.runs_created]
 }
 
 resource "google_monitoring_alert_policy" "queue_depth" {
@@ -57,6 +58,7 @@ resource "google_monitoring_alert_policy" "queue_depth" {
     }
   }
   notification_channels = local.channels
+  depends_on = [google_monitoring_metric_descriptor.queue_depth]
 }
 
 resource "google_monitoring_alert_policy" "webhook_auth" {
@@ -76,6 +78,7 @@ resource "google_monitoring_alert_policy" "webhook_auth" {
     }
   }
   notification_channels = local.channels
+  depends_on = [google_monitoring_metric_descriptor.webhook_auth_failures]
 }
 
 resource "google_monitoring_alert_policy" "cost_per_day" {
@@ -95,4 +98,5 @@ resource "google_monitoring_alert_policy" "cost_per_day" {
     }
   }
   notification_channels = local.channels
+  depends_on = [google_monitoring_metric_descriptor.runs_cost_usd]
 }

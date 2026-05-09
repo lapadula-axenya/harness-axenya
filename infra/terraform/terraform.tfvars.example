@@ -2,12 +2,20 @@ gcp_project_id     = "<GCP_PROJECT_ID>"           # Q2 — Estevão
 region             = "us-central1"
 environment        = "prod"
 
-# Image refs come from CI; for first apply, use a placeholder image.
-api_image    = "us-central1-docker.pkg.dev/<GCP_PROJECT_ID>/xenia-images/xenia-api:latest"
-worker_image = "us-central1-docker.pkg.dev/<GCP_PROJECT_ID>/xenia-images/xenia-worker:latest"
+# api_image / worker_image são opcionais. Se não passar nada, Terraform sobe
+# Cloud Run com a imagem `hello` do GCP só pra criar o recurso; o GitHub
+# Actions deploy depois flipa pra imagem real (xenia-api / xenia-worker).
+# Não defina essas variáveis até a primeira imagem real existir no
+# Artifact Registry.
 
 cloudsql_tier   = "db-custom-2-7680"
 redis_memory_gb = 1
 
-slack_webhook_url  = "<SLACK_WEBHOOK_URL>"        # #axenya-agents-alerts
+# Slack notification channel: GCP exige OAuth interativo via console, não
+# webhook URL. `slack_webhook_url` fica aqui só por compat; se quiser Slack
+# em produção, crie o channel manualmente no console e cole o id em
+# `slack_channel_id` (formato projects/.../notificationChannels/...).
+slack_webhook_url  = ""
+slack_channel_id   = ""
+
 notification_email = "sophia@axenya.com"
