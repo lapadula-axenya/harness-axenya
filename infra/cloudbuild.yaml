@@ -1,0 +1,50 @@
+# Cloud Build pipeline for Xenia Harness.
+#
+# Triggered by GitHub Actions on push to main. Builds two images
+# (xenia-api, xenia-worker) and pushes them to Artifact Registry. The
+# subsequent gcloud run deploy step is in deploy.yml since it needs
+# orchestration across two services + traffic split.
+
+substitutions:
+  _REGION: us-central1
+  _PROJECT_ID: ${PROJECT_ID}
+  _AR_REPO: xenia-images
+
+steps:
+  - id: build-api
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - Dockerfile.api
+      - -t
+      - ${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/xenia-api:${SHORT_SHA}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/xenia-api:latest
+      - .
+
+  - id: build-worker
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - Dockerfile.worker
+      - -t
+      - ${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/xenia-worker:${SHORT_SHA}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/xenia-worker:latest
+      - .
+
+  - id: push-api
+    name: gcr.io/cloud-builders/docker
+    args: ["push", "--all-tags", "${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/xenia-api"]
+
+  - id: push-worker
+    name: gcr.io/cloud-builders/docker
+    args: ["push", "--all-tags", "${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/xenia-worker"]
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+timeout: 1200s

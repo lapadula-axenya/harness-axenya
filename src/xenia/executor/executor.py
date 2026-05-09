@@ -1,13 +1,16 @@
-"""Phase 1 simple tool-use executor.
+"""Phase 2 LangGraph-driven executor.
 
-Runs a Claude-style loop:
-  - send messages + tools to the LLM
-  - if the response contains tool_uses, execute each, append tool_result blocks,
-    repeat
-  - otherwise, return the assistant's text
+Each run is a LangGraph thread (`thread_id = str(run_id)`). The Postgres
+checkpointer persists state between steps, so a worker that dies mid-run can
+be replaced and resume from the last checkpoint.
 
-LangGraph + checkpointing replaces this in Phase 2; the public entry-point
-`execute_run` will then dispatch to LangGraph.
+Contract:
+  * `run_agent(run_id=...)` is the single entry-point used by the Celery task
+    and by the API in dev/test mode (BackgroundTasks).
+  * Every node transition produces a `run_events` row.
+  * Cancellation is checked between steps by polling the `runs.status`
+    column. A run flipped to `cancelled` exits the loop within one
+    checkpoint boundary (≤10s in practice).
 """
 from __future__ import annotations
 
@@ -17,10 +20,16 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.graph.state import CompiledStateGraph
+
 from xenia.agents.definition import AgentDefinition
-from xenia.llm.client import LLMClient, LLMMessage, LLMResponse
-from xenia.skills.base import SkillRegistry, SkillResult
+from xenia.agents.graph_builder import AgentState, build_graph
+from xenia.config import get_settings
+from xenia.llm.client import LLMClient
+from xenia.skills.base import SkillRegistry
 from xenia.storage.db import session_scope
+from xenia.storage.models import RunStatus
 from xenia.storage.repositories import RunEventRepository, RunRepository
 
 logger = logging.getLogger(__name__)
@@ -35,6 +44,7 @@ class ExecutionOutcome:
     steps_executed: int
     tokens_input: int
     tokens_output: int
+    cancelled: bool = False
 
 
 class ExecutorError(Exception):
@@ -58,6 +68,32 @@ class ExecutorTimeoutError(ExecutorError):
         )
 
 
+class CancelledError(ExecutorError):
+    def __init__(self) -> None:
+        super().__init__("run was cancelled", code="CANCELLED")
+
+
+async def _open_checkpointer() -> AsyncPostgresSaver:
+    """Open an `AsyncPostgresSaver` against the configured Postgres URL.
+
+    Uses the sync URL form (`postgresql+psycopg://`) without the SQLAlchemy
+    driver prefix — `langgraph-checkpoint-postgres` expects raw psycopg DSNs.
+    """
+    settings = get_settings()
+    dsn = settings.database_url_sync.replace("postgresql+psycopg://", "postgresql://")
+    saver_ctx = AsyncPostgresSaver.from_conn_string(dsn)
+    saver = await saver_ctx.__aenter__()
+    await saver.setup()
+    saver._ctx = saver_ctx
+    return saver
+
+
+async def _close_checkpointer(saver: AsyncPostgresSaver) -> None:
+    ctx = getattr(saver, "_ctx", None)
+    if ctx is not None:
+        await ctx.__aexit__(None, None, None)
+
+
 async def run_agent(
     *,
     run_id: uuid.UUID,
@@ -66,23 +102,35 @@ async def run_agent(
     llm_client: LLMClient,
     skill_registry: SkillRegistry,
 ) -> ExecutionOutcome:
-    """Run a single agent invocation. Persists run + events transactionally."""
+    """Execute a single run end-to-end. Persists status + events transactionally."""
     async with session_scope() as session:
         run_repo = RunRepository(session)
-        event_repo = RunEventRepository(session)
         run = await run_repo.get(run_id)
         if run is None:
             raise ExecutorError(f"run {run_id} not found")
+        if run.status == RunStatus.cancelled:
+            return ExecutionOutcome(
+                output=None,
+                error="cancelled before start",
+                error_code="CANCELLED",
+                error_class="CancelledError",
+                steps_executed=0,
+                tokens_input=0,
+                tokens_output=0,
+                cancelled=True,
+            )
         await run_repo.mark_running(run)
 
+    saver = await _open_checkpointer()
     try:
         outcome = await asyncio.wait_for(
-            _run_loop(
+            _run_graph(
                 run_id=run_id,
                 definition=definition,
                 payload=payload,
                 llm_client=llm_client,
                 skill_registry=skill_registry,
+                saver=saver,
             ),
             timeout=definition.execution.timeout_seconds,
         )
@@ -91,10 +139,21 @@ async def run_agent(
             output=None,
             error=f"timeout after {definition.execution.timeout_seconds}s",
             error_code="TIMEOUT",
-            error_class="TimeoutExceeded",
+            error_class="ExecutorTimeoutError",
             steps_executed=0,
             tokens_input=0,
             tokens_output=0,
+        )
+    except CancelledError:
+        outcome = ExecutionOutcome(
+            output=None,
+            error="run cancelled",
+            error_code="CANCELLED",
+            error_class="CancelledError",
+            steps_executed=0,
+            tokens_input=0,
+            tokens_output=0,
+            cancelled=True,
         )
     except ExecutorError as exc:
         outcome = ExecutionOutcome(
@@ -117,13 +176,112 @@ async def run_agent(
             tokens_input=0,
             tokens_output=0,
         )
+    finally:
+        await _close_checkpointer(saver)
 
+    await _persist_outcome(run_id, outcome)
+    return outcome
+
+
+async def _run_graph(
+    *,
+    run_id: uuid.UUID,
+    definition: AgentDefinition,
+    payload: dict[str, Any],
+    llm_client: LLMClient,
+    skill_registry: SkillRegistry,
+    saver: AsyncPostgresSaver,
+) -> ExecutionOutcome:
+    builder = build_graph(definition, llm_client, skill_registry)
+    graph: CompiledStateGraph = builder.compile(checkpointer=saver)
+
+    config = {"configurable": {"thread_id": str(run_id)}}
+    initial_state: AgentState = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": _build_initial_user_message(payload)}
+                ],
+            }
+        ],
+        "payload": payload,
+        "step": 0,
+        "tokens_input": 0,
+        "tokens_output": 0,
+        "last_error": None,
+        "output": None,
+        "cancelled": False,
+        "branch": None,
+    }
+
+    final_state: AgentState | None = None
+    step_counter = 0
+    seen_messages = 0
+    async for event in graph.astream(
+        initial_state,
+        config=config,
+        stream_mode="values",
+    ):
+        final_state = event
+        step_counter = int(event.get("step", step_counter) or step_counter)
+
+        await _log_event(
+            run_id,
+            "step_start",
+            step_counter,
+            {
+                "messages": len(event.get("messages") or []),
+                "tokens_input_total": int(event.get("tokens_input") or 0),
+                "tokens_output_total": int(event.get("tokens_output") or 0),
+            },
+        )
+
+        # Emit granular events for any new messages produced by the last node.
+        new_messages = (event.get("messages") or [])[seen_messages:]
+        seen_messages += len(new_messages)
+        for msg in new_messages:
+            await _emit_message_events(run_id, step_counter, msg)
+
+        # Co-operative cancellation check — fast-fail if /v1/runs/{id}/cancel
+        # was hit. The graph stops after the current node finishes.
+        if step_counter % 1 == 0 and await _is_cancelled(run_id):
+            raise CancelledError()
+
+        if step_counter >= definition.execution.max_steps:
+            raise StepLimitError(definition.execution.max_steps)
+
+    if final_state is None:
+        raise ExecutorError("graph produced no events")
+
+    output: str | None = final_state.get("output")
+    return ExecutionOutcome(
+        output=output,
+        error=None,
+        error_code=None,
+        error_class=None,
+        steps_executed=int(final_state.get("step") or step_counter),
+        tokens_input=int(final_state.get("tokens_input") or 0),
+        tokens_output=int(final_state.get("tokens_output") or 0),
+    )
+
+
+async def _persist_outcome(run_id: uuid.UUID, outcome: ExecutionOutcome) -> None:
     async with session_scope() as session:
         run_repo = RunRepository(session)
         event_repo = RunEventRepository(session)
         run = await run_repo.get(run_id)
         if run is None:
-            raise ExecutorError(f"run {run_id} disappeared")
+            return
+        if outcome.cancelled:
+            await run_repo.mark_cancelled(run)
+            await event_repo.append(
+                run_id=run_id,
+                event_type="cancelled",
+                step_number=outcome.steps_executed,
+                payload={"reason": outcome.error or "user-requested"},
+            )
+            return
         if outcome.error is None:
             await run_repo.mark_done(
                 run,
@@ -156,123 +314,11 @@ async def run_agent(
                 },
             )
 
-    return outcome
 
-
-async def _run_loop(
-    *,
-    run_id: uuid.UUID,
-    definition: AgentDefinition,
-    payload: dict[str, Any],
-    llm_client: LLMClient,
-    skill_registry: SkillRegistry,
-) -> ExecutionOutcome:
-    system_prompt = _render_system_prompt(definition.system_prompt, payload)
-    tools = skill_registry.tools_for(definition.skills)
-
-    messages: list[LLMMessage] = [
-        LLMMessage(
-            role="user",
-            content=[{"type": "text", "text": _build_initial_user_message(payload)}],
-        )
-    ]
-
-    tokens_input = 0
-    tokens_output = 0
-    final_text: str | None = None
-
-    for step in range(1, definition.execution.max_steps + 1):
-        await _log_event(run_id, "step_start", step, {"messages": len(messages)})
-
-        response: LLMResponse = await llm_client.complete(
-            model=definition.llm.model,
-            system=system_prompt,
-            messages=messages,
-            tools=tools or None,
-            max_tokens=definition.llm.max_tokens,
-            temperature=definition.llm.temperature,
-        )
-        tokens_input += response.tokens_input
-        tokens_output += response.tokens_output
-
-        await _log_event(
-            run_id,
-            "llm_response",
-            step,
-            {
-                "stop_reason": response.stop_reason,
-                "tool_uses": len(response.tool_uses),
-                "text_chars": len(response.text),
-                "tokens_input": response.tokens_input,
-                "tokens_output": response.tokens_output,
-            },
-        )
-
-        if not response.has_tool_uses:
-            final_text = response.text
-            return ExecutionOutcome(
-                output=final_text,
-                error=None,
-                error_code=None,
-                error_class=None,
-                steps_executed=step,
-                tokens_input=tokens_input,
-                tokens_output=tokens_output,
-            )
-
-        # Append assistant message containing tool_use blocks.
-        assistant_blocks: list[dict[str, Any]] = []
-        if response.text:
-            assistant_blocks.append({"type": "text", "text": response.text})
-        for tu in response.tool_uses:
-            assistant_blocks.append(
-                {
-                    "type": "tool_use",
-                    "id": tu.id,
-                    "name": tu.name,
-                    "input": tu.input,
-                }
-            )
-        messages.append(LLMMessage(role="assistant", content=assistant_blocks))
-
-        # Execute every tool_use and produce tool_result blocks.
-        tool_result_blocks: list[dict[str, Any]] = []
-        for tu in response.tool_uses:
-            await _log_event(
-                run_id,
-                "tool_call",
-                step,
-                {"tool_use_id": tu.id, "name": tu.name, "input": tu.input},
-            )
-            result = await _invoke_skill(skill_registry, tu.name, tu.input)
-            await _log_event(
-                run_id,
-                "tool_result",
-                step,
-                {"tool_use_id": tu.id, "ok": result.ok, "error": result.error},
-            )
-            tool_result_blocks.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tu.id,
-                    "content": [
-                        {"type": "text", "text": _format_skill_result(result)}
-                    ],
-                    "is_error": not result.ok,
-                }
-            )
-
-        messages.append(LLMMessage(role="user", content=tool_result_blocks))
-
-    raise StepLimitError(definition.execution.max_steps)
-
-
-def _render_system_prompt(template: str, payload: dict[str, Any]) -> str:
-    """Replace {{var}} placeholders with payload values (string-only, no eval)."""
-    rendered = template
-    for key, value in payload.items():
-        rendered = rendered.replace("{{" + key + "}}", str(value))
-    return rendered
+async def _is_cancelled(run_id: uuid.UUID) -> bool:
+    async with session_scope() as session:
+        run = await RunRepository(session).get(run_id)
+        return run is not None and run.status == RunStatus.cancelled
 
 
 def _build_initial_user_message(payload: dict[str, Any]) -> str:
@@ -285,45 +331,6 @@ def _build_initial_user_message(payload: dict[str, Any]) -> str:
     )
 
 
-async def _invoke_skill(
-    registry: SkillRegistry, name: str, args: dict[str, Any]
-) -> SkillResult:
-    if not registry.has(name):
-        return SkillResult(
-            ok=False,
-            error=f"unknown skill: {name}",
-            error_code="UNKNOWN_SKILL",
-        )
-    skill = registry.get(name)
-    try:
-        return await asyncio.wait_for(
-            skill.execute(**args), timeout=skill.timeout_seconds
-        )
-    except TimeoutError:
-        return SkillResult(
-            ok=False,
-            error=f"skill {name} timed out after {skill.timeout_seconds}s",
-            error_code="SKILL_TIMEOUT",
-        )
-    except Exception as exc:  # noqa: BLE001
-        return SkillResult(
-            ok=False, error=str(exc), error_code="SKILL_ERROR"
-        )
-
-
-def _format_skill_result(result: SkillResult) -> str:
-    import json
-
-    payload: dict[str, Any] = {"ok": result.ok}
-    if result.data is not None:
-        payload["data"] = result.data
-    if result.error is not None:
-        payload["error"] = result.error
-    if result.error_code is not None:
-        payload["error_code"] = result.error_code
-    return json.dumps(payload, ensure_ascii=False)
-
-
 async def _log_event(
     run_id: uuid.UUID, event_type: str, step: int, data: dict[str, Any]
 ) -> None:
@@ -334,3 +341,62 @@ async def _log_event(
             step_number=step,
             payload=data,
         )
+
+
+async def _emit_message_events(
+    run_id: uuid.UUID, step: int, message: dict[str, Any]
+) -> None:
+    """Translate a freshly-appended LangGraph message into granular events.
+
+    Assistant messages with `tool_use` blocks emit `llm_response` (with
+    tool-use count) plus one `tool_call` per block. Plain assistant text
+    emits `llm_response`. User messages with `tool_result` blocks emit
+    one `tool_result` per block. This keeps observability rich enough to
+    debug agent loops without adding DB I/O inside graph nodes.
+    """
+    role = message.get("role")
+    content = message.get("content") or []
+    if role == "assistant":
+        tool_uses = [b for b in content if b.get("type") == "tool_use"]
+        text_blocks = [b for b in content if b.get("type") == "text"]
+        await _log_event(
+            run_id,
+            "llm_response",
+            step,
+            {
+                "tool_uses": len(tool_uses),
+                "text_chars": sum(len(b.get("text", "")) for b in text_blocks),
+            },
+        )
+        for tu in tool_uses:
+            await _log_event(
+                run_id,
+                "tool_call",
+                step,
+                {
+                    "tool_use_id": tu.get("id"),
+                    "name": tu.get("name"),
+                    "input": tu.get("input"),
+                },
+            )
+    elif role == "user":
+        for block in content:
+            if block.get("type") != "tool_result":
+                continue
+            await _log_event(
+                run_id,
+                "tool_result",
+                step,
+                {
+                    "tool_use_id": block.get("tool_use_id"),
+                    "is_error": block.get("is_error", False),
+                },
+            )
+
+
+def _render_system_prompt(template: str, payload: dict[str, Any]) -> str:
+    """Backward-compatible helper kept for tests that patched the old loop."""
+    rendered = template
+    for key, value in payload.items():
+        rendered = rendered.replace("{{" + key + "}}", str(value))
+    return rendered

@@ -1,6 +1,8 @@
-"""Run CRUD + cancel + retry."""
+"""Run CRUD + cancel + retry + SSE event stream."""
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import datetime
 from typing import Annotated
 from uuid import UUID
@@ -8,13 +10,12 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from jsonschema import Draft202012Validator, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sse_starlette.sse import EventSourceResponse
 
 from xenia.agents.registry import AgentNotFoundError, AgentRegistry
 from xenia.api.deps import (
     get_agent_registry,
     get_db,
-    get_settings_dep,
-    get_skills,
     require_scope,
 )
 from xenia.api.schemas import (
@@ -23,11 +24,8 @@ from xenia.api.schemas import (
     RunEventResponse,
     RunResponse,
 )
-from xenia.config import Settings
-from xenia.executor.executor import run_agent
-from xenia.llm.omnirouter_client import get_llm_client
+from xenia.executor.dispatch import get_dispatcher
 from xenia.observability import metrics
-from xenia.skills.base import SkillRegistry
 from xenia.storage.models import RunStatus
 from xenia.storage.repositories import RunEventRepository, RunRepository
 
@@ -44,9 +42,7 @@ async def create_run(
     agent_id: str,
     body: RunCreate,
     background: BackgroundTasks,
-    settings: Annotated[Settings, Depends(get_settings_dep)],
     registry: Annotated[AgentRegistry, Depends(get_agent_registry)],
-    skills: Annotated[SkillRegistry, Depends(get_skills)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> RunCreatedResponse:
     try:
@@ -75,20 +71,8 @@ async def create_run(
     await db.commit()
     metrics.runs_created.inc(agent_id, body.triggered_by)
 
-    llm_client = get_llm_client(
-        provider=definition.llm.provider,
-        anthropic_api_key=settings.anthropic_api_key,
-        omnirouter_api_key=settings.omnirouter_api_key,
-        omnirouter_base_url=settings.omnirouter_base_url,
-    )
-    background.add_task(
-        run_agent,
-        run_id=run.id,
-        definition=definition,
-        payload=body.payload,
-        llm_client=llm_client,
-        skill_registry=skills,
-    )
+    get_dispatcher(background).dispatch(run.id)
+
     return RunCreatedResponse(
         run_id=run.id,
         status=run.status.value if hasattr(run.status, "value") else str(run.status),
@@ -146,6 +130,57 @@ async def run_events(
     return [RunEventResponse.model_validate(e) for e in events]
 
 
+@router.get(
+    "/{run_id}/events/stream",
+    dependencies=[Depends(require_scope("runs:read"))],
+)
+async def run_events_stream(
+    run_id: UUID,
+) -> EventSourceResponse:
+    """Server-Sent Events stream of run events.
+
+    Polls the events table; emits each new row as one SSE event. Closes
+    automatically when the run reaches a terminal state. Idle keep-alives
+    every 15s prevent intermediaries from closing the connection.
+    """
+    from xenia.storage.db import get_sessionmaker
+
+    sessionmaker = get_sessionmaker()
+
+    async def _gen():  # type: ignore[no-untyped-def]
+        last_event_id = 0
+        terminal = {RunStatus.done, RunStatus.failed, RunStatus.cancelled}
+        while True:
+            async with sessionmaker() as session:
+                run = await RunRepository(session).get(run_id)
+                if run is None:
+                    yield {"event": "error", "data": json.dumps({"error": "run not found"})}
+                    return
+                events = await RunEventRepository(session).list_for_run(run_id)
+
+            new_events = [e for e in events if e.id > last_event_id]
+            for event in new_events:
+                last_event_id = event.id
+                yield {
+                    "id": str(event.id),
+                    "event": event.event_type,
+                    "data": json.dumps(
+                        {
+                            "step": event.step_number,
+                            "payload": event.payload,
+                            "ts": event.created_at.isoformat(),
+                        }
+                    ),
+                }
+
+            if run.status in terminal and not new_events:
+                yield {"event": "close", "data": json.dumps({"status": run.status})}
+                return
+            await asyncio.sleep(0.5)
+
+    return EventSourceResponse(_gen(), ping=15)  # type: ignore[no-untyped-call]
+
+
 @router.post(
     "/{run_id}/cancel",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -177,9 +212,7 @@ async def cancel_run(
 async def retry_run(
     run_id: UUID,
     background: BackgroundTasks,
-    settings: Annotated[Settings, Depends(get_settings_dep)],
     registry: Annotated[AgentRegistry, Depends(get_agent_registry)],
-    skills: Annotated[SkillRegistry, Depends(get_skills)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> RunCreatedResponse:
     repo = RunRepository(db)
@@ -201,20 +234,8 @@ async def retry_run(
     )
     await db.commit()
 
-    llm_client = get_llm_client(
-        provider=definition.llm.provider,
-        anthropic_api_key=settings.anthropic_api_key,
-        omnirouter_api_key=settings.omnirouter_api_key,
-        omnirouter_base_url=settings.omnirouter_base_url,
-    )
-    background.add_task(
-        run_agent,
-        run_id=new_run.id,
-        definition=definition,
-        payload=original.input_payload,
-        llm_client=llm_client,
-        skill_registry=skills,
-    )
+    get_dispatcher(background).dispatch(new_run.id)
+
     return RunCreatedResponse(
         run_id=new_run.id,
         status=new_run.status.value if hasattr(new_run.status, "value") else str(new_run.status),

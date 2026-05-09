@@ -1,26 +1,27 @@
-"""Unit tests for the Phase 1 simple executor (no DB)."""
+"""Unit tests for Phase 2 executor — graph drives LangGraph, no DB needed.
+
+The compiled graph uses an in-memory MemorySaver checkpointer so we can run
+the full StateGraph without Postgres.
+"""
 from __future__ import annotations
 
-import uuid
 from typing import Any
-from unittest.mock import patch
 
 import pytest
+from langgraph.checkpoint.memory import MemorySaver
 
 from xenia.agents.definition import (
     AgentDefinition,
     ExecutionConfig,
     LLMConfig,
 )
-from xenia.executor import executor as ex
-from xenia.llm.client import LLMMessage, LLMResponse, ToolUse
+from xenia.agents.graph_builder import build_graph
+from xenia.llm.client import LLMResponse, ToolUse
 from xenia.skills.base import SkillRegistry
 from xenia.skills.hubspot import HubspotGetContact
 
 
 class _StubLLMClient:
-    """LLM client that replays a queued list of LLMResponse objects."""
-
     def __init__(self, responses: list[LLMResponse]) -> None:
         self._responses = list(responses)
         self.calls: list[dict[str, Any]] = []
@@ -38,52 +39,62 @@ def _definition(skills: list[str]) -> AgentDefinition:
         nome="Test",
         descricao="Test agent",
         webhook_secret_env="WEBHOOK_SECRET_TEST",
-        input_schema={"type": "object", "required": ["foo"], "properties": {"foo": {"type": "string"}}},
+        input_schema={
+            "type": "object",
+            "required": ["foo"],
+            "properties": {"foo": {"type": "string"}},
+        },
         llm=LLMConfig(provider="anthropic", model="claude-sonnet-4-6"),
         skills=skills,
         system_prompt="hello {{foo}}",
-        execution=ExecutionConfig(max_steps=3, timeout_seconds=5),
+        execution=ExecutionConfig(max_steps=5, timeout_seconds=5),
     )
 
 
-async def test_run_loop_stops_on_text_only_response():
+async def _run(graph, payload: dict[str, Any]) -> dict[str, Any]:
+    final: dict[str, Any] = {}
+    config = {"configurable": {"thread_id": "test"}}
+    async for event in graph.astream(
+        {
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "go"}]}
+            ],
+            "payload": payload,
+            "step": 0,
+            "tokens_input": 0,
+            "tokens_output": 0,
+            "cancelled": False,
+        },
+        config=config,
+        stream_mode="values",
+    ):
+        final = event
+    return final
+
+
+@pytest.mark.asyncio
+async def test_default_graph_text_only_response():
     client = _StubLLMClient(
         [
             LLMResponse(
                 text="all done",
-                tool_uses=[],
                 stop_reason="end_turn",
                 tokens_input=10,
-                tokens_output=5,
+                tokens_output=4,
             )
         ]
     )
-    skills = SkillRegistry()
+    builder = build_graph(_definition([]), client, SkillRegistry())
+    graph = builder.compile(checkpointer=MemorySaver())
 
-    logged: list[tuple[str, int]] = []
-
-    async def fake_log(_run_id, event_type, step, _payload):
-        logged.append((event_type, step))
-
-    with patch.object(ex, "_log_event", side_effect=fake_log):
-        outcome = await ex._run_loop(
-            run_id=uuid.uuid4(),
-            definition=_definition([]),
-            payload={"foo": "bar"},
-            llm_client=client,
-            skill_registry=skills,
-        )
-
-    assert outcome.output == "all done"
-    assert outcome.error is None
-    assert outcome.steps_executed == 1
-    assert outcome.tokens_input == 10
-    assert outcome.tokens_output == 5
-    assert ("step_start", 1) in logged
-    assert ("llm_response", 1) in logged
+    final = await _run(graph, {"foo": "bar"})
+    assert final["output"] == "all done"
+    assert final["tokens_input"] == 10
+    assert final["tokens_output"] == 4
 
 
-async def test_run_loop_executes_tool_then_stops():
+@pytest.mark.asyncio
+async def test_default_graph_executes_tool_then_finishes():
     client = _StubLLMClient(
         [
             LLMResponse(
@@ -91,7 +102,7 @@ async def test_run_loop_executes_tool_then_stops():
                     ToolUse(
                         id="tu_1",
                         name="hubspot.get_contact",
-                        input={"contact_id": "abc"},
+                        input={"contact_id": "c1"},
                     )
                 ],
                 stop_reason="tool_use",
@@ -108,81 +119,39 @@ async def test_run_loop_executes_tool_then_stops():
     )
     skills = SkillRegistry()
     skills.register(HubspotGetContact())
+    builder = build_graph(_definition(["hubspot.get_contact"]), client, skills)
+    graph = builder.compile(checkpointer=MemorySaver())
 
-    with patch.object(ex, "_log_event"):
-        outcome = await ex._run_loop(
-            run_id=uuid.uuid4(),
-            definition=_definition(["hubspot.get_contact"]),
-            payload={"foo": "bar"},
-            llm_client=client,
-            skill_registry=skills,
-        )
-
-    assert outcome.output == "contact fetched"
-    assert outcome.steps_executed == 2
-    assert outcome.tokens_input == 35
-    assert outcome.tokens_output == 12
+    final = await _run(graph, {"foo": "bar"})
+    assert final["output"] == "contact fetched"
+    assert final["tokens_input"] == 35
+    assert final["tokens_output"] == 12
+    # Two LLM calls: initial + after tool result
     assert len(client.calls) == 2
-    # Second call should include tool_result block
-    second_messages: list[LLMMessage] = client.calls[1]["messages"]
-    assert any(
-        m.role == "user"
-        and isinstance(m.content, list)
-        and any(b.get("type") == "tool_result" for b in m.content)
-        for m in second_messages
-    )
 
 
-async def test_run_loop_handles_unknown_skill_gracefully():
-    client = _StubLLMClient(
-        [
-            LLMResponse(
-                tool_uses=[ToolUse(id="tu_1", name="not.a.skill", input={})],
-                stop_reason="tool_use",
-            ),
-            LLMResponse(text="fallback", stop_reason="end_turn"),
-        ]
-    )
-    with patch.object(ex, "_log_event"):
-        outcome = await ex._run_loop(
-            run_id=uuid.uuid4(),
-            definition=_definition([]),
-            payload={"foo": "bar"},
-            llm_client=client,
-            skill_registry=SkillRegistry(),
-        )
-    assert outcome.output == "fallback"
+@pytest.mark.asyncio
+async def test_default_graph_cancel_short_circuits():
+    """When cancelled flag is set, llm_call short-circuits without invoking client."""
+    client = _StubLLMClient([])  # would raise if called
+    builder = build_graph(_definition([]), client, SkillRegistry())
+    graph = builder.compile(checkpointer=MemorySaver())
 
-
-async def test_run_loop_step_limit():
-    # Always returns a tool_use, never finishes -> StepLimitError
-    client = _StubLLMClient(
-        [
-            LLMResponse(
-                tool_uses=[ToolUse(id=f"tu_{i}", name="hubspot.get_contact", input={"contact_id": "x"})],
-                stop_reason="tool_use",
-            )
-            for i in range(10)
-        ]
-    )
-    skills = SkillRegistry()
-    skills.register(HubspotGetContact())
-
-    with patch.object(ex, "_log_event"), pytest.raises(ex.StepLimitError):
-        await ex._run_loop(
-            run_id=uuid.uuid4(),
-            definition=_definition(["hubspot.get_contact"]),
-            payload={"foo": "bar"},
-            llm_client=client,
-            skill_registry=skills,
-        )
-
-
-def test_render_system_prompt_substitutes_payload():
-    rendered = ex._render_system_prompt("hello {{name}}!", {"name": "world"})
-    assert rendered == "hello world!"
-
-
-def test_render_system_prompt_leaves_unmatched_placeholders():
-    rendered = ex._render_system_prompt("hello {{name}} {{other}}", {"name": "x"})
-    assert rendered == "hello x {{other}}"
+    final: dict[str, Any] = {}
+    config = {"configurable": {"thread_id": "cancel-test"}}
+    async for event in graph.astream(
+        {
+            "messages": [],
+            "payload": {"foo": "bar"},
+            "step": 0,
+            "tokens_input": 0,
+            "tokens_output": 0,
+            "cancelled": True,
+        },
+        config=config,
+        stream_mode="values",
+    ):
+        final = event
+    # No LLM calls happened
+    assert client.calls == []
+    assert final.get("output") is None

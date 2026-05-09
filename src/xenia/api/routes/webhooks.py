@@ -9,15 +9,12 @@ from jsonschema import Draft202012Validator, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from xenia.agents.registry import AgentNotFoundError, AgentRegistry
-from xenia.api.deps import get_agent_registry, get_db, get_settings_dep, get_skills
+from xenia.api.deps import get_agent_registry, get_db, get_settings_dep
 from xenia.api.schemas import RunCreatedResponse
 from xenia.config import Settings
-from xenia.executor.executor import run_agent
-from xenia.llm.client import LLMClient
-from xenia.llm.omnirouter_client import get_llm_client
+from xenia.executor.dispatch import get_dispatcher
 from xenia.observability import metrics
 from xenia.security.hmac_verify import verify_signature
-from xenia.skills.base import SkillRegistry
 from xenia.storage.repositories import RunRepository
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -34,7 +31,6 @@ async def webhook(
     background: BackgroundTasks,
     settings: Annotated[Settings, Depends(get_settings_dep)],
     registry: Annotated[AgentRegistry, Depends(get_agent_registry)],
-    skills: Annotated[SkillRegistry, Depends(get_skills)],
     db: Annotated[AsyncSession, Depends(get_db)],
     x_xenia_signature: Annotated[str | None, Header()] = None,
     x_xenia_timestamp: Annotated[str | None, Header()] = None,
@@ -96,20 +92,7 @@ async def webhook(
     await db.commit()
     metrics.runs_created.inc(agent_id, "webhook")
 
-    llm_client: LLMClient = get_llm_client(
-        provider=definition.llm.provider,
-        anthropic_api_key=settings.anthropic_api_key,
-        omnirouter_api_key=settings.omnirouter_api_key,
-        omnirouter_base_url=settings.omnirouter_base_url,
-    )
-    background.add_task(
-        run_agent,
-        run_id=run.id,
-        definition=definition,
-        payload=payload,
-        llm_client=llm_client,
-        skill_registry=skills,
-    )
+    get_dispatcher(background).dispatch(run.id)
 
     return RunCreatedResponse(
         run_id=run.id,

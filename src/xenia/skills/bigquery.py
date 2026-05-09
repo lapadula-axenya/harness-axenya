@@ -1,16 +1,27 @@
-"""BigQuery skill — Phase 1 mock with whitelist enforcement.
+"""BigQuery skill — whitelist enforcement + optional real client.
 
-Real `google-cloud-bigquery` calls land in Phase 3. The whitelist mechanic is
-already in place so agents authored in Phase 1 stay forward-compatible.
+Whitelist lives in `agents/queries/*.yaml` (Phase 1). Phase 3 adds a real
+`google-cloud-bigquery` execution path, gated behind two checks:
+
+  * `BIGQUERY_PROJECT_ID` env var (or `GCP_PROJECT_ID` fallback) is set.
+  * Application Default Credentials are available (i.e. `gcloud auth
+    application-default login` locally, or service-account binding in prod).
+
+Without those, the skill returns the same deterministic mock rows as
+Phase 1 so local dev and tests keep working.
 """
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from xenia.skills.base import Skill, SkillResult
+
+logger = logging.getLogger(__name__)
 
 _QUERY_DIR = Path("agents/queries")
 
@@ -68,7 +79,34 @@ class BigqueryQuery(Skill):
                 error_code="QUERY_NOT_WHITELISTED",
             )
 
-        # Phase 1: return a deterministic mock instead of executing SQL.
+        entry = whitelist[query_name]
+        project_id = (
+            os.environ.get("BIGQUERY_PROJECT_ID")
+            or os.environ.get("GCP_PROJECT_ID")
+            or os.environ.get("GOOGLE_CLOUD_PROJECT")
+        )
+
+        if project_id:
+            try:
+                rows = await _run_real_query(
+                    project_id=project_id,
+                    sql=entry["sql"],
+                    params=params,
+                    declared_params=entry.get("params") or {},
+                )
+                return SkillResult(
+                    ok=True,
+                    data={"query_name": query_name, "params": params, "rows": rows},
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("BigQuery execution failed: %s", exc)
+                return SkillResult(
+                    ok=False,
+                    error=str(exc),
+                    error_code="BIGQUERY_FAILED",
+                )
+
+        # Dev/test fallback — deterministic mock rows.
         return SkillResult(
             ok=True,
             data={
@@ -80,6 +118,34 @@ class BigqueryQuery(Skill):
                 ],
             },
         )
+
+
+async def _run_real_query(
+    *,
+    project_id: str,
+    sql: str,
+    params: dict[str, Any],
+    declared_params: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Execute via google-cloud-bigquery, off the event loop."""
+    import asyncio
+
+    from google.cloud import bigquery
+
+    def _sync_run() -> list[dict[str, Any]]:
+        client = bigquery.Client(project=project_id)
+        query_params = [
+            bigquery.ScalarQueryParameter(name, declared_params.get(name, "STRING"), value)
+            for name, value in params.items()
+        ]
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=query_params,
+            use_legacy_sql=False,
+        )
+        result = client.query(sql, job_config=job_config).result(timeout=30)
+        return [dict(row) for row in result]
+
+    return await asyncio.to_thread(_sync_run)
 
 
 def all_skills() -> list[Skill]:
