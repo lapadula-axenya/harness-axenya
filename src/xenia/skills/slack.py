@@ -1,9 +1,12 @@
-"""Slack skills — Phase 1 in-memory mocks."""
+"""Slack skills — MCP-backed when SLACK_MCP_URL is set, mock otherwise."""
 from __future__ import annotations
 
+import os
 from typing import Any
 
+from xenia.security.secrets import read_secret
 from xenia.skills.base import Skill, SkillResult
+from xenia.skills.mcp_skill import MCPSkill
 
 
 class SlackNotifyChannel(Skill):
@@ -50,5 +53,31 @@ class SlackSendDM(Skill):
         )
 
 
+def _mcp_skills(server_url: str, token: str | None) -> list[Skill]:
+    auth = f"Bearer {token}" if token else None
+    return [
+        MCPSkill(
+            name="slack.notify_channel",
+            description=SlackNotifyChannel.description,
+            input_schema=SlackNotifyChannel.input_schema,
+            server_url=server_url,
+            remote_tool="post_message",
+            auth_header=auth,
+        ),
+        MCPSkill(
+            name="slack.send_dm",
+            description=SlackSendDM.description,
+            input_schema=SlackSendDM.input_schema,
+            server_url=server_url,
+            remote_tool="send_dm",
+            auth_header=auth,
+        ),
+    ]
+
+
 def all_skills() -> list[Skill]:
+    server_url = os.environ.get("SLACK_MCP_URL")
+    if server_url:
+        token = read_secret("slack_mcp_token")
+        return _mcp_skills(server_url, token)
     return [SlackNotifyChannel(), SlackSendDM()]

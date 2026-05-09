@@ -1,0 +1,7 @@
+# Terraform local state and var overrides — never commit.
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform/
+.terraform.lock.hcl
