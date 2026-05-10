@@ -102,3 +102,4 @@ See [`SPEC.md` § Repository Structure](SPEC.md) — files in this branch follow
 that structure exactly. Modules referenced by the spec but not yet implemented
 in Phase 1 (LangGraph builder, Celery tasks, MCP skill, Langfuse) ship as
 typed stubs so that the import graph and file paths stay stable across phases.
+
