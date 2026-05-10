@@ -1,403 +1,327 @@
 # Axenya Agent Platform — Escopo Consolidado
 
-**Status:** Draft para discussão
+**Status:** Draft v2 (pivot de eng-tool → PM-tool)
 **Autores:** Sophia Lapadula (PM/Eng), com inputs de Rafa Magalhães
 **Última atualização:** 2026-05-10
 **Branch:** `claude/define-platform-scope-hiLQm`
 
 ---
 
-## 1. Tese
+## 1. Tese (revisada)
 
-Hoje rodamos agentes Claude na GUI individual de cada operador. Isso não é
-infraestrutura — é experimentação. Para virar **infraestrutura crítica da
-Axenya** (no nível em que órgãos de saúde podem auditar e clientes
-enterprise podem confiar), precisamos atravessar a fronteira de:
+A virada conceitual: a plataforma **não é um painel de operação de
+engenharia**. É uma **ferramenta para pessoas de produto entregarem
+produtos e melhorias do zero — aprovando um plano**.
 
-> "agente que ajuda uma pessoa" → "frota de agentes que executa um processo
-> da companhia, com SLA, audit trail e governança"
+> PM escreve uma intenção em linguagem natural →
+> agente orquestrador propõe um plano (escopo, fluxo, evals, riscos) →
+> PM aprova →
+> a frota de agentes executa, com aprovação humana só nos pontos certos →
+> o trabalho aparece como **thread em um kanban**, do "Backlog" ao "Em
+> produção", visível para o time todo.
 
-O Xenia Harness entregou ~50% disso: a **camada de infra** (queue, executor,
-tracing, deploy, fluxos determinísticos via YAML) está pronta. O que falta é
-a **camada de operação de frota** (evals, mission control, approvals
-auditáveis, prompt registry, context library, drift detection, self-healing).
+A consequência prática é que **kanban é a surface principal**, não um
+dashboard de traces. Traces, evals e logs continuam existindo como
+*drill-down* a partir do card, mas a vida do PM acontece no quadro.
 
-Este documento define o escopo dessa segunda metade.
-
----
-
-## 2. Princípios de design
-
-Inspirados no pitch da Factory ("Missions"), em Tess.ai e nas observações da
-Sofia:
-
-1. **Validação adversarial > confirmatória.** Critérios de sucesso são
-   escritos *antes* da execução, por um agente/papel diferente do que
-   executa. Aplica-se a código (creator/verifier) e a output operacional
-   (eval rubric escrita pelo orquestrador, não pelo worker).
-2. **Handoff via escrita de estado, não via context window.** Workers
-   gravam o que fizeram, o que falhou, exit codes — o sistema não conta com
-   memória implícita do LLM.
-3. **Lógica em prompts/skills, não em state machines hard-coded.** Para
-   sobreviver a saltos de fundação, ~70% da orquestração mora em texto
-   versionado (prompts, rubricas, skills), não em código Python. Quando
-   precisamos de determinismo (e.g. fluxos n8n-like), versionamos o grafo
-   em YAML, não em Python.
-4. **Serial > paralelo no ato de escrita.** Paralelismo é restrito a
-   leituras (research, retrieval, verificações independentes).
-5. **Custo é first-class.** Toda chamada tem owner, budget e fallback de
-   modelo. "Modelo agnóstico" não é vaidade — é estratégia de leverage com
-   vendors.
-6. **Tudo auditável.** 100% das chamadas, com inputs/outputs/decisões/quem
-   aprovou. Sem isso não vendemos para insurance/saúde.
+A camada técnica (harness, queue, executor, fallback, prompt registry)
+permanece. O que muda é tudo acima dela: substituímos o "Mission
+Control de eng" por um **Kanban de Missões** com semântica de produto.
 
 ---
 
-## 3. Mapa requisito × estado atual × gap
+## 2. Princípios de design (atualizados)
 
-| # | Requisito | Status no Harness | Gap concreto |
-|---|-----------|------------------|--------------|
-| R1 | Versionamento de agente em produção | ✅ `yaml_hash` + snapshot persistido por run | Rollback automático, diff entre versões, "promote v3 → prod" via UI/CLI |
-| R2 | Evals e detecção de drift | ❌ | Rubric DSL, eval runner offline + online sample, dashboard de drift |
-| R3 | Fallback de modelos (multi-vendor) | ⚠️ provider toggle por agente | Roteamento dinâmico por custo/erro/latência; circuit breaker por vendor |
-| R4 | Governança fina de skills/dados por agente | ⚠️ JWT scopes para humanos | ACL agente → skill → recurso; policy engine; "só Aline pode operar este agente" |
-| R5 | Logs 100% (audit/replay/iterate) | ✅ runs + run_events + Langfuse | Replay automatizado a partir de um run_id; diff de outputs ao reexecutar |
-| R6 | Aprovação humana + Mission Control | ❌ stub | UI rica, fila de approvals, SLA timer, registro imutável de quem aprovou o quê |
-| R7 | Heartbeat e drill-down | ⚠️ events + alerts | UI: linha do tempo de outputs intermediários, replay step-by-step |
-| R8 | Enfileiramento e escala lateral | ✅ Celery + Redis + Cloud Run | Pronto. Falta só load test 1000x e definição de SLA por agente. |
-| R9 | Slack como caller (gatilho, não só skill) | ❌ | Slash commands, mentions, Block Kit para approvals inline |
-| R10 | Fluxos determinísticos versionáveis | ✅ LangGraph YAML | Editor visual (n8n-like), preview de execução, diff visual |
-| R11 | Engenharia de contexto / "biblioteca" de entidades | ❌ | Ontologia Axenya (cliente, beneficiário, evento, broker…), retrieval governado |
-| R12 | Preview env com dados mockados | ❌ | Sandbox por agente/mission, fixtures determinísticas, assertion suite |
-| R13 | Self-healing | ⚠️ retry com backoff | Detecção autônoma de drift que abre ticket/aciona fallback |
-| R14 | Audit de approvals (quem aprovou o quê, com motivo) | ❌ | Tabela imutável append-only, exportação para auditoria externa |
-| R15 | Prompt registry com versionamento | ⚠️ yaml em git | Registry com promote/rollback, eval atrelado ao prompt, A/B holdout |
-| R16 | SSO + identity + controle de acesso (ponto inicial do Rafa) | ❌ | Google Workspace SSO, RBAC, mapping user → agentes operáveis |
-
----
-
-## 4. Os onze blocos de escopo
-
-Cada bloco abaixo é uma unidade de entrega. Ordem reflete dependências e
-risco, não prioridade de negócio (essa fica para o roadmap final).
-
-### Bloco A — Identity & Access (R16, R4)
-**O quê:**
-- SSO via Google Workspace (`@axenya.com.br`).
-- RBAC com papéis: `viewer`, `operator`, `approver`, `admin`, `auditor`.
-- ACL fina: `user × agent × action` (operate, approve, view-traces, edit-config).
-- Mapping `agent × skill × resource` (ex.: agente de Dra. Aline só lê
-  inbox dela; só Aline + dois substitutos operam).
-- Service accounts para webhooks externos com escopo restrito.
-
-**Aceite:**
-- Login por Google obrigatório no dashboard e na API humana.
-- `xenia auth check --user X --agent Y --action operate` retorna
-  decisão consistente.
-- Agente sem permissão para skill `gmail.read` falha *na invocação da
-  skill*, não só no roteamento.
-
-**Build vs buy:** Build (thin layer sobre `authlib` + `casbin` ou
-`oso`). Já temos JWT no harness; estender é barato.
+1. **Plano antes de execução.** Nada começa a executar sem um plano
+   escrito e aprovado. Plano é o "contrato de validação" da Factory,
+   adaptado para produto: escopo, critérios de sucesso, fluxo de
+   agentes, skills/dados necessários, custo estimado, pontos de
+   aprovação humana.
+2. **Kanban como fonte da verdade operacional.** Toda thread (mission)
+   é um card. Mover card = mudar estado. PMs vivem aqui.
+3. **PM-first, eng-rare.** PM cria, aprova e acompanha sem abrir
+   código. Eng só entra quando o agente orquestrador identifica que
+   precisa de skill nova, integração nova ou política de acesso nova.
+4. **Simples > completo.** A versão 1 entrega valor com 5 colunas e
+   um agente orquestrador competente. Não vamos construir n8n visual
+   nem org chart de Tess.ai já. Cortamos escopo agressivamente.
+5. **Lógica em prompts/skills, não em state machines.** Mantém-se da
+   v1 — orquestração mora em texto versionado.
+6. **Tudo auditável.** 100% das chamadas + 100% das aprovações com
+   quem/quando/motivo. Sem isso não vendemos para saúde.
 
 ---
 
-### Bloco B — Prompt & Agent Registry (R1, R15)
-**O quê:**
-- Promote/rollback de versão de agente (`v1.2.3 → prod`, `prod → v1.2.2`).
-- Diff visual entre versões (prompt, modelo, skills habilitadas, params).
-- Cada versão amarrada ao seu eval result e custo médio observado.
-- "Shadow mode": rodar v_next em paralelo a v_current sem expor output ao
-  caller, para comparar.
+## 3. UX central: Kanban de Missões
 
-**Aceite:**
-- Promover uma versão é uma chamada idempotente, com audit log.
-- Rollback < 30s.
-- UI mostra `v1.2.3 (prod) | v1.2.4 (canary 5%) | v1.3.0 (shadow)`.
+### Colunas (default, configurável por workspace)
 
-**Build vs buy:** Avaliar **MLflow Prompt Registry** (Sofia já está
-testando) e **Langfuse Prompts**. Decisão: usar Langfuse Prompts como
-storage + camada fina nossa de promote/rollback/ACL. Não construir do
-zero.
+```
+┌──────────┬──────────┬──────────┬─────────────┬────────────┬──────────┐
+│  Ideia   │ Plano em │ Plano    │  Em         │  Validação │  Em      │
+│          │ desenho  │ aprovação│  execução   │  / QA      │  produção│
+└──────────┴──────────┴──────────┴─────────────┴────────────┴──────────┘
+                                                                  │
+                                                            (Pausada)
+                                                            (Arquivada)
+```
 
----
+- **Ideia:** PM escreveu o intent em linguagem natural. Ainda sem
+  plano.
+- **Plano em desenho:** agente orquestrador está rascunhando o plano
+  (ele é um agente, com prompt versionado em Langfuse). Pode pedir
+  esclarecimento ao PM via comentário no card.
+- **Plano em aprovação:** plano completo, aguardando OK do PM (ou de
+  um aprovador, conforme política — bloco A/Identity).
+- **Em execução:** workers rodando. Heartbeat e custo em tempo real
+  no card.
+- **Validação/QA:** validators rodando (evals automáticos + checagem
+  humana se o plano exigir).
+- **Em produção:** entregue. Telemetria contínua. Drift abre card
+  automático de "investigar regressão".
 
-### Bloco C — Eval Framework + Drift Detection (R2, R13)
-**O quê:**
-- DSL para rubrica de eval (assertions determinísticas + LLM-as-judge).
-- Eval suites por agente: golden set offline + amostragem online (5–10%).
-- Dashboard de drift: distribuição de scores ao longo do tempo, alerta
-  quando score cai > 2σ ou cai > X% absoluto em janela móvel.
-- Self-healing v0: drift detectado → abre ticket no Mission Control +
-  bloqueia promote da versão atual.
+### Anatomia do card (mission)
 
-**Aceite:**
-- Cada agente tem ≥ 1 suite com ≥ 10 casos.
-- Rodar `xenia eval run <agent> <version>` produz score + breakdown.
-- Drift no agente de triagem dispara alerta em < 1h após começar.
+Cada card abre para um detalhe com 5 abas:
+1. **Plano** — o documento aprovado. Versionado. Diff visível.
+2. **Execução** — timeline de eventos (drill-down do harness atual).
+3. **Aprovações** — fila de approvals desta mission, com quem/motivo.
+4. **Evals** — scores das suites rodadas, comparado à baseline.
+5. **Custo** — $/run, tokens, modelo usado, fallbacks acionados.
 
-**Build vs buy:** Langfuse cobre tracing + scores + dataset. Construir
-nossa rubric DSL e o orquestrador de evals em cima. Não é compra.
+### Eventos que mexem o card automaticamente
 
----
+- Plano gerado → "Plano em desenho" → "Plano em aprovação".
+- PM aprova → "Em execução".
+- Validators passam → "Validação / QA" → "Em produção" (ou volta a
+  "Em execução" se falhar).
+- Drift detectado em prod → cria *novo* card "Investigar regressão
+  em <mission>" na coluna "Plano em desenho".
+- Approval pendente > SLA → card pisca + notifica Slack.
 
-### Bloco D — Mission Control UI (R6, R7, R14)
-**O quê:** O dashboard que substitui o Streamlit atual.
-- **Frota:** lista de agentes com heartbeat (último run, success rate 24h,
-  custo dia, p95 latência).
-- **Run inspector:** linha do tempo de eventos com drill-down em cada
-  output intermediário (input, prompt expandido, response, tool calls,
-  custo, modelo usado, fallback acionado).
-- **Approval inbox:** approvals pendentes com SLA timer, contexto e botões
-  Aprovar/Rejeitar/Pedir alteração — *com campo de motivo obrigatório*.
-- **Audit log:** quem aprovou o quê, quando, com qual motivo. Imutável,
-  append-only, exportável.
+### O que **não** está no kanban (intencional)
 
-**Aceite:**
-- Operador consegue ir de "alerta no Slack" → "estou olhando o passo 3 do
-  run que falhou" em ≤ 2 cliques.
-- Approver autenticado vê só approvals das frotas que opera.
-- Audit log sobrevive a delete/edit em qualquer cenário não-DBA.
-
-**Build vs buy:** Inicialmente avaliamos Mission Control (open-source,
-mc.builderz.dev) e OpenHive. Recomendação: **fork/integrar com Mission
-Control OSS** se a license permitir (MIT/Apache); senão construir Next.js
-+ shadcn em cima dos endpoints do harness. **Não** ficamos no Streamlit.
+- Configuração de skills/integrações (mora em config separada,
+  acessada por eng).
+- Tracing fino (mora no Langfuse, linkado a partir da aba Execução).
+- Org chart de agentes estilo Tess (não construímos isso já).
 
 ---
 
-### Bloco E — Model Routing & Fallback (R3)
-**O quê:**
-- Política de roteamento por agente: primary, fallback ladder, budget cap.
-- Circuit breaker por vendor: 5xx > X% em N min → desvia tráfego.
-- Routing por custo: tasks classificadas (raciocínio pesado vs.
-  formatação) podem cair em modelos mais baratos automaticamente.
-- Telemetria: custo por agente, por mission, por usuário operador.
+## 4. O agente orquestrador ("Planner")
 
-**Aceite:**
-- Anthropic 503 → próximo run usa Gemini/Claude via OpenRouter sem
-  intervenção manual; Langfuse trace marca o switch.
-- Budget mensal de agente excedido → bloqueia novas runs e alerta no
-  Slack (não derruba runs em curso).
+É a peça nova mais importante. Substitui o "PM escreve PRD".
 
-**Build vs buy:** Usar **OpenRouter** ou **LiteLLM proxy** como roteador
-de fato. Construir só a camada de policy + budget tracking em cima. O
-"OmniRouter" stub atual vira esse adapter.
+**Input:** texto livre do PM ("Quero um agente que triagem leads que
+chegam pela landing page e marque automaticamente no HubSpot, com
+aprovação humana se score < 0.6").
 
----
+**Output (= o plano):**
+- **Escopo e não-escopo** em bullets curtos.
+- **Fluxo proposto** (sequência de agentes/skills, formato YAML do
+  harness — gerado, não escrito à mão).
+- **Skills/dados necessários** com flag se já existem ou precisam
+  ser construídos por eng.
+- **Critérios de sucesso** (eval rubric — usados depois pelos
+  validators).
+- **Pontos de aprovação humana** explícitos.
+- **Custo estimado** ($/run e $/mês com volume estimado).
+- **Riscos e mitigation** (LGPD, vendor lock-in, dependência de
+  skill nova).
 
-### Bloco F — Slack como gatilho de primeira classe (R9)
-**O quê:**
-- Slash commands `/xenia run <agent> <args>`.
-- Mentions em canal: `@xenia triagem este lead [link]`.
-- Approvals inline com Block Kit (Aprovar/Rejeitar direto da mensagem,
-  com auth contra Bloco A).
-- DMs do bot como surface de mission control mobile.
+**Comportamento:**
+- Faz perguntas via comentário no card quando o intent é ambíguo
+  (ex.: "Quem aprova exceções? Aline ou o time comercial?").
+- Tem acesso *read-only* à context library (bloco G) para entender
+  que entidades Axenya estão envolvidas.
+- Tem prompt versionado em Langfuse Prompts. PM pode pedir "regerar
+  com modelo X" ou "regerar mais conservador".
 
-**Aceite:**
-- Aline aprova um exception case do celular dela em < 30s, sem abrir
-  dashboard.
-- Toda invocação Slack vira run rastreável com `caller=slack:U123`.
-
-**Build vs buy:** Build. Slack Bolt SDK + endpoints existentes do
-harness. Reaproveita Bloco A para autorização.
+**É um agente, não código.** Isso significa que ele evolui com o
+prompt + skills, não com release de software.
 
 ---
 
-### Bloco G — Context Library & Entity Layer (R11)
-**O quê:** O ponto que a Sofia levantou. Hoje cada agente é uma ilha.
-- Ontologia Axenya: `Cliente`, `Beneficiário`, `Evento de saúde`,
-  `Broker`, `Apólice`, `Empresa cliente`, etc. Schema versionado.
-- Retrieval governado: agente declara `requires: [beneficiario:read]` e
-  recebe acesso só ao subgrafo permitido.
-- Caminho do dado: BigQuery (source of truth) → entity layer cacheado
-  (Memorystore/Postgres) → retrieval skill MCP.
-- Memória multi-camada à la Tess: organizacional / departamental /
-  individual / por agente — mas com *governança real*, não só layering.
+## 5. Mapa requisito × estado atual × gap (revisado)
 
-**Aceite:**
-- Agente que precisa de "todos beneficiários da empresa X" recebe lista
-  filtrada por LGPD scope.
-- Adicionar uma nova entidade é uma migration, não um projeto.
-- Retrieval traceado em Langfuse com query + linhas retornadas + cost.
-
-**Build vs buy:** Build. É o nosso moat. Ferramentas externas (LlamaIndex,
-LangChain memory) não vão entender "beneficiário Axenya".
-
----
-
-### Bloco H — Preview Environments & Fixtures (R12)
-**O quê:** Inspirado na fala da Sofia sobre Factory worker estruturando
-preview com dados mockados.
-- Por agente, fixture deterministic set (ex.: 5 leads canônicos, 3
-  emails canônicos da Aline, etc.).
-- `xenia preview <agent> --fixture lead_alta_complexidade` roda em
-  sandbox, sem efeitos colaterais (skills externas viram mocks).
-- Preview URL compartilhável para revisão visual (output renderizado,
-  diff vs. baseline esperado).
-
-**Aceite:**
-- Mudança de prompt → operador roda preview → vê output em < 60s sem
-  tocar prod.
-- CI bloqueia merge se preview de agente regredir contra fixture.
-
-**Build vs buy:** Build, em cima do executor existente + flag
-`mock_skills=True`.
+| # | Requisito | Status | Gap | Coberto por |
+|---|-----------|--------|-----|-------------|
+| R1 | Versionamento do agente em prod | ✅ yaml_hash | Promote/rollback via UI; diff | Bloco B |
+| R2 | Evals e drift | ❌ | Rubric + drift alert | Bloco C |
+| R3 | Fallback de modelos | ⚠️ | Roteamento por custo/erro | Bloco E |
+| R4 | Governança de acesso | ⚠️ | ACL agente×skill×recurso + SSO | Bloco A |
+| R5 | Logs 100% | ✅ | Replay + diff | Bloco I |
+| R6 | Aprovação + visibilidade | ❌ | **Kanban** + approval inbox | **Bloco D (novo)** |
+| R7 | Heartbeat/drill-down | ⚠️ | Aba "Execução" do card | Bloco D |
+| R8 | Queue + escala | ✅ | Load test + SLA | Bloco K |
+| R9 | Slack como gatilho | ❌ | Slash + mention + approval inline | Bloco F |
+| R10 | Fluxos versionáveis | ✅ | YAML gerado pelo Planner | Bloco D |
+| R11 | Context library | ❌ | Ontologia + retrieval governado | Bloco G |
+| R12 | Preview com mocks | ❌ | Sandbox por mission | Bloco H |
+| R13 | Self-healing | ⚠️ | Drift abre card automático | Bloco C+D |
+| R14 | Audit de approvals | ❌ | Append-only + motivo obrigatório | Bloco D |
+| R15 | Prompt registry | ⚠️ | **Langfuse Prompts (buy)** | Bloco B |
+| R16 | SSO + ACL | ❌ | Google SSO + RBAC | Bloco A |
 
 ---
 
-### Bloco I — Replay & Reproducibility (R5 hardening)
-**O quê:**
-- `xenia replay <run_id>` reexecuta o run com mesmo input, mesma versão
-  de agente, mesmo modelo, e gera diff de output.
-- Útil para: pós-mortem, antes de promover nova versão, auditoria
-  externa.
-- Determinismo *aproximado* (LLMs não são determinísticos): usamos
-  `temperature=0` quando possível e gravamos seed quando o vendor
-  expõe.
+## 6. Os 8 blocos de entrega (simplificado de 11 → 8)
 
-**Aceite:**
-- Replay de run de 30 dias atrás funciona, *desde que* a versão de agente
-  ainda esteja no registry (garantimos retenção ≥ 1 ano).
-- Diff de output classifica: idêntico / equivalente semântico / divergente.
+Cortes vs. v1: removi "Visual Flow Editor" (Planner gera YAML, não
+precisamos de n8n agora) e juntei "Replay" no bloco de evals. Mantive
+foco em mínimo viável.
 
-**Build vs buy:** Build, fino, em cima de runs + Langfuse + LLM-as-judge
-para classificar diff.
+### Bloco A — Identity & Access **(R4, R16)**
+SSO Google, RBAC (`viewer`/`pm`/`approver`/`admin`/`auditor`), ACL
+fina `agente×skill×recurso`. Operador vê só os cards das missions
+que opera.
+**Aceite:** Aline aprova só missions dela; viewer vê o quadro mas
+não move cards; agente sem permissão à skill `gmail.read` falha na
+invocação.
+
+### Bloco B — Prompt & Agent Registry **(R1, R15)**
+**Buy: Langfuse Prompts** + thin wrapper para promote/rollback/diff.
+Cada mission, ao "Em produção", *snapshot* a versão do agente +
+versões dos prompts. Rollback < 30s.
+
+### Bloco C — Evals + Drift + Replay **(R2, R5, R13)**
+Rubric DSL escrita pelo Planner como parte do plano. Suites rodam
+em CI da mission e em sample online. Drift > 2σ → cria card de
+regressão automaticamente. Replay determinístico de qualquer run.
+
+### Bloco D — Kanban de Missões **(R6, R7, R10, R14)** ⭐ **PEÇA CENTRAL**
+Quadro Kanban com 5 colunas + Pausada/Arquivada. Card abre nas 5
+abas (Plano/Execução/Aprovações/Evals/Custo). Approval inbox
+filtrada por usuário. Audit log append-only (motivo obrigatório).
+Drag-and-drop só onde a transição é permitida (estado-máquina por
+trás). Real-time via WebSocket.
+
+### Bloco E — Model Routing & Fallback **(R3)**
+**Buy: LiteLLM proxy** + nossa policy layer (budget cap por
+mission, circuit breaker por vendor, fallback ladder).
+
+### Bloco F — Slack triggers **(R9)**
+Slash `/xenia mission "intent"` cria card direto na coluna "Ideia".
+Mentions criam comentário no card. Approvals via Block Kit, com
+auth contra Bloco A.
+
+### Bloco G — Context Library **(R11)**
+Ontologia mínima v1: `Cliente`, `Beneficiário`, `Empresa cliente`,
+`Apólice`. Retrieval governado por ACL do Bloco A. Expansão
+incremental.
+
+### Bloco H — Preview Sandbox **(R12)**
+`xenia preview <mission>` roda em sandbox com fixtures
+deterministic, skills externas mockadas. Output renderizado como
+preview compartilhável dentro do card (aba Execução).
+
+### Bloco K — Load test, SLA & Cost **(R8 finishing)**
+Teste de carga 1000x, SLA por agente, painel de custo unitário
+($/mission, $/cliente atendido). Continua sendo build sobre stack
+existente.
 
 ---
 
-### Bloco J — Visual Flow Editor (R10 evolução)
-**O quê:** Hoje fluxos determinísticos vivem em YAML. Operadores não-eng
-não conseguem editar.
-- Editor visual estilo n8n com nodes = skills/agents.
-- Compila para o mesmo YAML que o LangGraph builder já consome.
-- Versionamento: cada save é commit no registry (Bloco B).
+## 7. Build vs Buy — recomendação
 
-**Aceite:**
-- Operador não-eng cria fluxo "novo lead → enriquecer → triagem →
-  notificar Slack" sem abrir editor de código.
-- YAML gerado é byte-equivalente ao YAML escrito à mão (round-trip).
-
-**Build vs buy:** **Avaliar comprar/integrar.** n8n self-hosted é AGPL —
-problema de licença. Alternativas: Activepieces (MIT), Windmill (AGPL
-mas com licença comercial). Decisão: começar pelo Activepieces como
-front-end, mantendo nosso executor/registry como back-end. Decidir após
-spike de 1 semana.
-
----
-
-### Bloco K — Load test, SLA & Cost Observability (R8 finishing)
-**O quê:**
-- Load test: 1000x volume atual, validar autoscale Cloud Run.
-- SLA por agente: p50/p95/p99 + success rate, definidos em config do
-  agente, monitorados via Langfuse + Prometheus.
-- Painel de custo unitário: $/run, $/mission, $/cliente atendido.
-
-**Aceite:**
-- Teste sintético dispara 10k runs/h, sistema mantém p95 < SLA do
-  agente.
-- Diretoria recebe weekly automático: top 5 agentes por custo, $/output
-  útil.
-
-**Build vs buy:** Build (Locust + dashboards Grafana já existentes).
-
----
-
-## 5. Build vs Buy — recomendação consolidada
-
-| Bloco | Decisão | Justificativa |
-|-------|---------|---------------|
-| A. Identity | Build | Já temos JWT; SSO Google é trivial; ACL é nosso diferencial |
-| B. Prompt Registry | **Buy (Langfuse Prompts)** + thin wrapper | Construir do zero é desperdício |
-| C. Evals | Build sobre Langfuse Datasets/Scores | Rubric DSL é nossa |
-| D. Mission Control UI | Build (Next.js) — avaliar fork de mc.builderz.dev | Streamlit não escala |
-| E. Routing/Fallback | **Buy (LiteLLM proxy)** + policy layer | Roteamento já é commodity |
-| F. Slack triggers | Build | Necessário e barato com Bolt SDK |
+| Bloco | Decisão | Notas |
+|-------|---------|-------|
+| A. Identity | Build | SSO Google + casbin/oso |
+| B. Prompt Registry | **Buy: Langfuse Prompts** ✅ | Confirmado |
+| C. Evals + Drift + Replay | Build sobre Langfuse Datasets | Rubric DSL é nossa |
+| D. **Kanban de Missões** | **Build (Next.js + shadcn + tRPC + WebSocket)** | É o coração — tem que ser nosso |
+| E. Routing | **Buy: LiteLLM proxy** | Commodity |
+| F. Slack | Build | Bolt SDK |
 | G. Context Library | Build | É o moat |
-| H. Preview Envs | Build | Específico do nosso executor |
-| I. Replay | Build, fino | 200 LOC sobre infra existente |
-| J. Flow Editor | **Avaliar (Activepieces)** | Spike 1 semana, decidir |
-| K. Load/SLA | Build | Stack já está em pé |
+| H. Preview Sandbox | Build | Específico do nosso executor |
+| K. Load/SLA | Build | Stack já em pé |
 
-**Sobre Tess.ai e Factory.ai como produto inteiro:**
-- **Tess.ai:** vale assinar para uma vertical/equipe não-técnica como
-  experimento (ex.: time comercial), com budget limitado de credits,
-  *sem* migrar dados clínicos sensíveis. Não substitui o harness para
-  agentes de saúde.
-- **Factory.ai:** mais relevante para nossa engenharia interna (delegated
-  development) do que para agentes operacionais Axenya. Avaliar
-  separadamente — não é parte deste escopo.
+**Decisões implícitas:**
+- **Não** construímos visual flow editor (n8n-like) na v1. Planner
+  gera YAML; PM lê o plano em markdown, não em diagrama. Reavaliamos
+  em 6 meses.
+- **Não** construímos org chart de agentes estilo Tess. Lista por
+  workspace basta na v1.
+- Streamlit atual é **arquivado** assim que o Bloco D entra.
 
 ---
 
-## 6. Fases sugeridas
+## 8. Fases revisadas (foco em simplicidade)
 
-Cada fase tem foco e exit criteria; ordem otimiza para "demo-able value"
-incremental e desbloqueio de governança em saúde.
+### Fase 5 — Fundação PM (5 semanas)
+**Blocos A + B + D (mínimo: kanban com 5 colunas, sem WebSocket,
+approvals manuais sem Slack inline) + Planner v1.**
+**Exit:**
+- PM cria mission via UI ("Ideia") → Planner gera plano → PM
+  aprova → harness executa → card chega em "Em produção".
+- SSO Google obrigatório; rollback de versão funciona.
+- *Demo:* Sofia migra um agente que hoje roda na GUI individual
+  para a plataforma, **sem escrever código**.
 
-### Fase 5 — Governança mínima (4 semanas)
-Blocos A + B (parcial: registry sem shadow) + Bloco F básico.
-**Exit:** SSO Google funcionando; agente promovido/rolled-back via UI;
-operador invoca agente via Slack mention. Pronto para mover *um* fluxo da
-GUI individual para produção compartilhada.
+### Fase 6 — Confiabilidade (4 semanas)
+**Blocos C + I (replay como parte de C) + F.**
+**Exit:**
+- Cada mission em prod tem suite de eval rodando; drift abre card.
+- PM invoca/aprova mission do Slack.
+- Replay funciona para audit pós-incidente.
 
-### Fase 6 — Operação de frota (5 semanas)
-Blocos D + C (parcial: evals offline) + Bloco I.
-**Exit:** Mission Control UI no ar; cada agente tem suite de evals;
-replay funciona. Pronto para auditoria externa básica.
+### Fase 7 — Robustez (3 semanas)
+**Blocos E + K + G (parcial: 2 entidades core).**
+**Exit:** fallback automático multi-vendor; SLA monitorado;
+primeiras entidades Axenya na biblioteca compartilhada.
 
-### Fase 7 — Robustez de fundação (4 semanas)
-Blocos E + K + G (parcial: 2 entidades core).
-**Exit:** fallback automático multi-vendor; SLA monitorado; primeiras
-entidades Axenya na biblioteca compartilhada.
+### Fase 8 — Não-eng creators (3 semanas)
+**Blocos H + G (full) + Planner v2 (mais autônomo, melhor com
+ambiguidade).**
+**Exit:** Aline cria uma mission do zero (texto → plano → aprovação
+→ produção) em < 1 dia, sem intervenção de eng.
 
-### Fase 8 — Operação por não-engenheiros (4 semanas)
-Blocos J + H + C (online sampling/drift) + G (full).
-**Exit:** Sofia/Aline criam um fluxo novo sem engenheiro; preview com
-fixtures bloqueia regressões em CI; drift detection liga.
-
-Total: ~17 semanas de calendário com 2 engs dedicados (otimista). Ajustar
-após decisões de buy.
-
----
-
-## 7. Decisões abertas (precisam de você, Rafa)
-
-1. **Budget de buy:** topamos pagar Langfuse Cloud (~$200–500/mês) ou
-   self-host? Self-host adiciona ~1 semana de infra.
-2. **Ordem das fases:** governança (A/B) primeiro ou Mission Control (D)
-   primeiro? Argumento para A/B: sem isso não conseguimos confiar em
-   nada. Argumento para D: dá visibilidade política para o board.
-3. **Tess.ai paralelo:** topamos rodar pilot com time comercial em
-   paralelo, com escopo *zero* sobre dados clínicos? Ajuda a aprender o
-   que UX de no-code precisa entregar.
-4. **Mission Control naming:** mantemos "Mission Control" ou trocamos
-   para "Axenya Ops" / "Frota" / outro? (você disse que o nome é
-   ingrato, concordo — sugiro **"Frota Axenya"**.)
-5. **Política de modelo padrão:** Claude primary + Gemini fallback faz
-   sentido? Ou queremos Anthropic-only enquanto o contrato enterprise
-   estiver em pé?
+**Total:** ~15 semanas (-2 vs. v1) com 2 engs dedicados. O corte vem
+de descartar visual flow editor e simplificar Mission Control →
+Kanban.
 
 ---
 
-## 8. O que *não* está em escopo (explicitamente)
+## 9. O que precisa de você (Rafa)
 
-Para evitar creep:
-- Treinamento/fine-tuning de modelos próprios.
-- Marketplace público de agentes (estilo OpenHive). Foco interno.
-- Mobile app nativo. Slack + web mobile responsivo bastam.
-- Multi-tenant para clientes externos. Toda a plataforma é
-  single-tenant Axenya por enquanto.
-- Substituir o BigQuery como source of truth de dados clínicos.
+1. **Confirmar a virada PM-first.** Tudo neste doc assume que o
+   sucesso da v1 é "Sofia migra um agente sem código", não "eng tem
+   melhor visibility de traces".
+2. **Definir as 5 colunas default.** Eu propus
+   Ideia / Plano em desenho / Plano em aprovação / Em execução /
+   Validação / Em produção. Trocar?
+3. **Política de aprovação por default:** o autor da mission pode
+   aprovar o próprio plano? Eu sugiro **não** para qualquer mission
+   com skill que toque dado clínico ou paciente — exige segundo
+   approver. Configurável por workspace.
+4. **Naming:** "Mission" vs. "Thread" vs. "Iniciativa" vs.
+   "Workstream"? Você usou "thread" na mensagem; mantenho?
+5. **Planner como buy ou build?** Buildar em cima de Claude com
+   prompt versionado é o caminho rápido (1–2 semanas). Tem
+   alternativa pronta que eu não enxergo?
 
 ---
 
-## 9. Próximos passos concretos
+## 10. Out of scope (explícito)
 
-1. **Você (Rafa):** validar/ajustar este escopo, responder seção 7.
-2. **Sofia:** spike de 1 semana em Activepieces vs. n8n licensing
-   (Bloco J).
-3. **Sofia + Estevão:** pricing de Langfuse Cloud + LiteLLM hosting.
-4. **Sofia:** rascunhar SPEC técnico do Bloco A (SSO + ACL) — é o
-   destravamento maior e menor risco.
-5. **Mariano:** alinhar com board sobre buy de Langfuse e pilot Tess.ai.
+- Visual flow editor estilo n8n.
+- Org chart de agentes estilo Tess.ai.
+- Multi-tenant para clientes externos.
+- Treinamento/fine-tuning próprio.
+- Marketplace público de agentes.
+- Mobile app nativo (web responsive + Slack bastam).
+- Substituir BigQuery como source of truth clínico.
+
+---
+
+## 11. Próximos passos concretos
+
+1. **Você (Rafa):** validar virada PM-first; responder seção 9.
+2. **Sofia:** spike 1 semana — protótipo Figma do Kanban + fluxo
+   "criar mission → aprovar plano → ver em prod".
+3. **Sofia:** SPEC técnico do Bloco A (SSO + ACL) e do Bloco D
+   (Kanban + estado-máquina das colunas).
+4. **Sofia + Estevão:** contratar Langfuse Cloud (ou self-host) +
+   LiteLLM hosting.
+5. **Sofia:** desenhar prompt do Planner v1 + 3 missions canônicas
+   pra testar (1 lead triagem, 1 email Aline, 1 ops interna).
