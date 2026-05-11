@@ -132,6 +132,96 @@ class RunEvent(Base):
     run: Mapped[Run] = relationship(back_populates="events")
 
 
+class ProcessStatus(enum.StrEnum):
+    active = "active"
+    paused = "paused"
+    archived = "archived"
+
+
+class ProcessTargetKind(enum.StrEnum):
+    agent = "agent"
+    mission = "mission"
+    worker = "worker"
+
+
+class ProcessLastStatus(enum.StrEnum):
+    ok = "ok"
+    partial = "partial"
+    failed = "failed"
+
+
+_process_status_pg = ENUM(
+    ProcessStatus,
+    name="process_status",
+    create_type=False,
+    values_callable=lambda enum_cls: [m.value for m in enum_cls],
+)
+
+_process_target_kind_pg = ENUM(
+    ProcessTargetKind,
+    name="process_target_kind",
+    create_type=False,
+    values_callable=lambda enum_cls: [m.value for m in enum_cls],
+)
+
+_process_last_status_pg = ENUM(
+    ProcessLastStatus,
+    name="process_last_status",
+    create_type=False,
+    values_callable=lambda enum_cls: [m.value for m in enum_cls],
+)
+
+
+class Process(Base):
+    __tablename__ = "processes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    cron_expression: Mapped[str] = mapped_column(Text, nullable=False)
+    schedule_human: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    target_kind: Mapped[ProcessTargetKind] = mapped_column(
+        _process_target_kind_pg, nullable=False
+    )
+    target_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    target_label: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    owner_name: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_initials: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[ProcessStatus] = mapped_column(
+        _process_status_pg, nullable=False, default=ProcessStatus.active
+    )
+    last_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_run_status: Mapped[ProcessLastStatus | None] = mapped_column(
+        _process_last_status_pg, nullable=True
+    )
+    last_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    next_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    success_rate_30d: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, default=Decimal("0")
+    )
+    runs_30d: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 class WebhookSecret(Base):
     __tablename__ = "webhook_secrets"
 

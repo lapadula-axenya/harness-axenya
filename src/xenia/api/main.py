@@ -5,12 +5,13 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from xenia import __version__
 from xenia.agents.registry import get_registry
 from xenia.api.deps import get_settings_dep
 from xenia.api.middleware.logging import RequestLogMiddleware, configure_logging
-from xenia.api.routes import agents, dashboard, runs, webhooks
+from xenia.api.routes import agents, dashboard, processes, runs, webhooks
 from xenia.api.schemas import HealthResponse
 from xenia.config import Settings
 
@@ -33,11 +34,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_middleware(RequestLogMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=False,
+)
 
 app.include_router(webhooks.router, prefix="/v1")
 app.include_router(runs.router, prefix="/v1")
 app.include_router(agents.router, prefix="/v1")
 app.include_router(dashboard.router, prefix="/v1")
+app.include_router(processes.router, prefix="/v1")
 
 
 @app.get("/health", response_model=HealthResponse)

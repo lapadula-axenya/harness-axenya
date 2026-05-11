@@ -61,6 +61,26 @@ uv sync --extra dashboard
 uv run streamlit run dashboard/app.py
 ```
 
+### Processos (UI + backend)
+
+```bash
+# 1. migrations + seed dos 8 processos do screenshot
+uv run alembic upgrade head
+uv run python scripts/seed_processes.py
+
+# 2. API (já expõe /v1/processes)
+uv run uvicorn xenia.api.main:app --reload --port 8080
+
+# 3. (opcional) scheduler tick — dispara processos com next_run_at <= now()
+uv run python scripts/processes_tick.py --interval 30
+
+# 4. frontend Next.js — usa rewrite /api/xenia/* -> $XENIA_API_URL (default http://localhost:8080)
+cd web && pnpm install && pnpm run dev
+```
+
+Página em `http://localhost:3000/processes`. Polling 8s, ações de
+pausar/reativar gravam direto via API.
+
 Por padrão consulta `http://localhost:8080`. O JWT engineer é gerado
 automaticamente a partir do `JWT_SECRET` do `.env` — em produção isso vira
 SSO de usuário real (Phase 4, Q7).

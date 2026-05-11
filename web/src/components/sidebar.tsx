@@ -13,6 +13,7 @@ import {
   Sparkles,
   Plug,
   Settings,
+  Repeat,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -20,6 +21,7 @@ const navMain = [
   { href: "/", label: "Kanban", icon: Kanban, badge: "8" },
   { href: "/missions", label: "Todas missões", icon: ListChecks },
   { href: "/agents", label: "Agentes", icon: Bot, badge: "4" },
+  { href: "/processes", label: "Processos", icon: Repeat, badge: "8" },
   { href: "/skills", label: "Skills", icon: Wrench },
   { href: "/evals", label: "Evals & drift", icon: LineChart, badge: "1" },
 ];
