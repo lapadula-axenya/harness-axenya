@@ -144,3 +144,56 @@ export interface AuditEntry {
   decision: "allow" | "deny";
   reason: string;
 }
+
+export type EntityKind =
+  | "mission"
+  | "agent"
+  | "skill"
+  | "process"
+  | "knowledge"
+  | "user";
+
+export interface EntityRef {
+  kind: EntityKind;
+  id: string;
+  label: string;
+}
+
+export interface Process {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  cron: string;
+  cronHuman: string;
+  timezone: string;
+  triggers: EntityRef[]; // agentes ou missions que ele dispara
+  outputChannel?: string;
+  owner: User;
+  status: "active" | "paused" | "error";
+  lastRunAt?: string;
+  lastRunStatus?: "ok" | "fail" | "partial";
+  nextRunAt: string;
+  runs30d: number;
+  successRate30d: number;
+  avgDurationMs?: number;
+  knowledgeRefs: string[]; // paths para arquivos em /knowledge
+}
+
+export type KnowledgeNodeKind = "folder" | "file";
+
+export interface KnowledgeNode {
+  id: string;
+  kind: KnowledgeNodeKind;
+  name: string;
+  path: string;
+  parentPath?: string;
+  children?: string[]; // ids
+  updatedAt?: string;
+  author?: User;
+  body?: string; // markdown
+  links?: EntityRef[]; // entidades referenciadas
+  backlinks?: EntityRef[]; // entidades que apontam para este doc
+  tags?: string[];
+}
+

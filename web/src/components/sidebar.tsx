@@ -13,15 +13,23 @@ import {
   Sparkles,
   Plug,
   Settings,
+  Repeat,
+  BookOpen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navMain = [
   { href: "/", label: "Kanban", icon: Kanban, badge: "8" },
   { href: "/missions", label: "Todas missões", icon: ListChecks },
+  { href: "/processes", label: "Processos", icon: Repeat, badge: "8" },
   { href: "/agents", label: "Agentes", icon: Bot, badge: "4" },
   { href: "/skills", label: "Skills", icon: Wrench },
   { href: "/evals", label: "Evals & drift", icon: LineChart, badge: "1" },
+];
+
+const navKnowledge = [
+  { href: "/knowledge", label: "Conhecimento", icon: BookOpen },
+  { href: "/prompt-library", label: "Prompt library", icon: Sparkles },
 ];
 
 const navOps = [
@@ -31,7 +39,6 @@ const navOps = [
 ];
 
 const navSystem = [
-  { href: "/prompt-library", label: "Prompt library", icon: Sparkles },
   { href: "/settings", label: "Configurações", icon: Settings },
 ];
 
@@ -102,6 +109,7 @@ export function Sidebar() {
 
       <div className="flex-1 overflow-y-auto pb-4">
         <Section title="Trabalho" items={navMain} pathname={pathname} />
+        <Section title="Conhecimento" items={navKnowledge} pathname={pathname} />
         <Section title="Governança" items={navOps} pathname={pathname} />
         <Section title="Sistema" items={navSystem} pathname={pathname} />
       </div>
