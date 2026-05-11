@@ -5,6 +5,7 @@ import { Sidebar } from "@/components/sidebar";
 import { TopBar } from "@/components/top-bar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "sonner";
+import { NewMissionHost } from "@/components/mission/new-mission-host";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -41,6 +42,7 @@ export default function RootLayout({
               <main className="flex-1 overflow-auto">{children}</main>
             </div>
           </div>
+          <NewMissionHost />
           <Toaster theme="dark" position="bottom-right" />
         </TooltipProvider>
       </body>

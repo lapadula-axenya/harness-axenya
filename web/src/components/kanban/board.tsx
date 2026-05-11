@@ -23,6 +23,8 @@ import { Plus } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { MissionDetail } from "@/components/mission/mission-detail";
+import { openNewMissionDialog } from "@/components/mission/new-mission-trigger";
+import { useCreatedMissions } from "@/lib/mission-store";
 
 const VALID_TRANSITIONS: Record<MissionState, MissionState[]> = {
   idea: ["plan_drafting", "archived"],
@@ -64,8 +66,8 @@ function DroppableColumn({
           </div>
           <button
             className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-            onClick={() => toast("Em breve: criar mission direto na coluna")}
-            aria-label="Adicionar"
+            onClick={() => openNewMissionDialog()}
+            aria-label="Nova missão"
           >
             <Plus className="h-3.5 w-3.5" />
           </button>
@@ -102,13 +104,25 @@ function DroppableColumn({
 }
 
 export function Board() {
-  const [missions, setMissions] = useState<Mission[]>(MISSIONS);
+  const created = useCreatedMissions();
+  const [localOverrides, setLocalOverrides] = useState<
+    Record<string, Partial<Mission>>
+  >({});
   const [activeId, setActiveId] = useState<string | null>(null);
   const [openMissionId, setOpenMissionId] = useState<string | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
   );
+
+  // Merge static mock missions + missions created this session + local state
+  // overrides (for drag transitions).
+  const missions = useMemo<Mission[]>(() => {
+    const base = [...created, ...MISSIONS];
+    return base.map((m) =>
+      localOverrides[m.id] ? { ...m, ...localOverrides[m.id] } : m
+    );
+  }, [created, localOverrides]);
 
   const byColumn = useMemo(() => {
     const map: Record<MissionState, Mission[]> = {
@@ -167,13 +181,13 @@ export function Board() {
       return;
     }
 
-    setMissions((prev) =>
-      prev.map((m) =>
-        m.id === activeMissionId
-          ? { ...m, state: targetColumn!, updatedAt: new Date().toISOString() }
-          : m
-      )
-    );
+    setLocalOverrides((prev) => ({
+      ...prev,
+      [activeMissionId]: {
+        state: targetColumn!,
+        updatedAt: new Date().toISOString(),
+      },
+    }));
     toast.success(
       `Movido para ${COLUMN_META[targetColumn].label}`,
       { description: activeMission.title }

@@ -1,7 +1,8 @@
 import { Board } from "@/components/kanban/board";
 import { MISSIONS } from "@/lib/mock-data";
-import { Filter, LayoutGrid, Plus, SlidersHorizontal } from "lucide-react";
+import { Filter, LayoutGrid, SlidersHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { NewMissionTrigger } from "@/components/mission/new-mission-trigger";
 
 export default function HomePage() {
   const pendingApprovals = MISSIONS.filter(
@@ -46,9 +47,7 @@ export default function HomePage() {
           <Button size="sm" variant="ghost" className="h-8 gap-1.5 text-xs">
             <LayoutGrid className="h-3.5 w-3.5" /> Visualização
           </Button>
-          <Button size="sm" className="h-8 gap-1.5 text-xs">
-            <Plus className="h-3.5 w-3.5" /> Nova missão
-          </Button>
+          <NewMissionTrigger className="h-8" />
         </div>
       </div>
 

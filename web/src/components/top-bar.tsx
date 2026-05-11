@@ -1,7 +1,8 @@
 "use client";
 
-import { Bell, Search, Sparkles } from "lucide-react";
+import { Bell, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { NewMissionTrigger } from "@/components/mission/new-mission-trigger";
 
 export function TopBar() {
   return (
@@ -20,14 +21,11 @@ export function TopBar() {
       </div>
 
       <div className="flex items-center gap-1.5">
-        <Button
-          size="sm"
+        <NewMissionTrigger
           variant="outline"
-          className="h-8 gap-1.5 border-border bg-muted/30 text-xs font-medium"
-        >
-          <Sparkles className="h-3.5 w-3.5" />
-          Nova missão
-        </Button>
+          withSparkle
+          className="h-8 border-border bg-muted/30 font-medium"
+        />
         <Button
           size="icon"
           variant="ghost"

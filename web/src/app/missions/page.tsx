@@ -2,7 +2,8 @@ import { MISSIONS, COLUMN_META } from "@/lib/mock-data";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Filter, Plus } from "lucide-react";
+import { Filter } from "lucide-react";
+import { NewMissionTrigger } from "@/components/mission/new-mission-trigger";
 import { formatDistanceToNowStrict } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { cn } from "@/lib/utils";
@@ -18,9 +19,7 @@ export default function MissionsPage() {
             <Button size="sm" variant="ghost" className="gap-1.5 text-xs">
               <Filter className="h-3.5 w-3.5" /> Filtros
             </Button>
-            <Button size="sm" className="gap-1.5 text-xs">
-              <Plus className="h-3.5 w-3.5" /> Nova missão
-            </Button>
+            <NewMissionTrigger />
           </>
         }
       />
